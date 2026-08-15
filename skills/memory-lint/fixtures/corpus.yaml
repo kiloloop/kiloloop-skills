@@ -1,0 +1,275 @@
+# Snapshot of the synthetic fixture corpus shipped with memory-lint 0.1.0.
+files:
+  'config.yaml': |
+    version: 1
+    corpus_root: fixtures/clean
+
+    profiles:
+      notes:
+        include:
+          - notes/**/*.md
+        checks:
+          frontmatter:
+            required_keys: [title, description, type]
+            quoted_keys: [description]
+            type_enum: [memory, note]
+          links: true
+          managed_markers:
+            pairs:
+              - begin: "<!-- BEGIN MANAGED -->"
+                end: "<!-- END MANAGED -->"
+          staleness:
+            max_age_days: 30
+            updated_required: true
+          structure:
+            max_line_length: 120
+
+      indexes:
+        include:
+          - MEMORY.md
+        checks:
+          links: true
+          structure:
+            max_line_length: 120
+
+    indexes:
+      - path: MEMORY.md
+        include:
+          - notes/**/*.md
+        exclude: []
+  'fixtures/clean/MEMORY.md': |
+    # Synthetic Memory Index
+
+    - [Alpha](notes/alpha.md)
+    - [Beta](notes/beta.md)
+    - [Gamma](notes/nested/gamma.md)
+  'fixtures/clean/notes/alpha.md': |
+    ---
+    title: Alpha
+    description: "Synthetic alpha memory"
+    type: memory
+    ---
+
+    *Updated:* 2026-08-01
+
+    # Alpha
+
+    Alpha links to [[beta]] and [Gamma](nested/gamma.md).
+
+    <!-- BEGIN MANAGED -->
+    This synthetic sentence is managed.
+    <!-- END MANAGED -->
+  'fixtures/clean/notes/beta.md': |
+    ---
+    title: Beta
+    description: 'Synthetic beta note'
+    type: note
+    ---
+
+    *Updated:* 2026-08-02
+
+    # Beta
+
+    Beta links back to [Alpha](alpha.md).
+  'fixtures/clean/notes/nested/gamma.md': |
+    ---
+    title: Gamma
+    description: "Synthetic nested note"
+    type: note
+    ---
+
+    *Updated:* 2026-08-03
+
+    # Gamma
+
+    Gamma links to [[../alpha]].
+  'fixtures/defects/MEMORY.md': |
+    # Synthetic Defect Index
+
+    - [Broken links](notes/broken-links.md)
+    - [Missing key](notes/missing-key.md)
+    - [Unquoted description](notes/unquoted-description.md)
+    - [Bad type](notes/bad-type.md)
+    - [Unclosed marker](notes/marker-unclosed.md)
+    - [Nested marker](notes/marker-nested.md)
+    - [Orphaned marker](notes/marker-orphaned.md)
+    - [Stale note](notes/stale.md)
+    - [Duplicate heading](notes/duplicate-heading.md)
+    - [Duplicate anchor](notes/duplicate-anchor.md)
+    - [Long line](notes/long-line.md)
+    - [Missing target](notes/does-not-exist.md)
+  'fixtures/defects/notes/bad-type.md': |
+    ---
+    title: Bad Type
+    description: "Synthetic invalid type"
+    type: secret
+    ---
+
+    *Updated:* 2026-08-01
+
+    # Bad Type
+
+    The type is outside the configured enum.
+  'fixtures/defects/notes/broken-links.md': |
+    ---
+    title: Broken Links
+    description: "Synthetic broken-link seeds"
+    type: note
+    ---
+
+    *Updated:* 2026-08-01
+
+    # Broken Links
+
+    Neither [[missing-wiki-target]] nor [missing relative](missing-relative.md) resolves.
+  'fixtures/defects/notes/duplicate-anchor.md': |
+    ---
+    title: Duplicate Anchor
+    description: "Synthetic duplicate explicit anchor"
+    type: note
+    ---
+
+    *Updated:* 2026-08-01
+
+    # Duplicate Anchor
+
+    <a id="reused-anchor"></a>
+
+    Synthetic content between anchors.
+
+    <a id="reused-anchor"></a>
+  'fixtures/defects/notes/duplicate-heading.md': |
+    ---
+    title: Duplicate Heading
+    description: "Synthetic duplicate heading"
+    type: note
+    ---
+
+    *Updated:* 2026-08-01
+
+    # Duplicate Heading
+
+    ## Repeated Section
+
+    First synthetic section.
+
+    ## Repeated Section
+
+    Second synthetic section.
+  'fixtures/defects/notes/long-line.md': |
+    ---
+    title: Long Line
+    description: "Synthetic long line"
+    type: note
+    ---
+
+    *Updated:* 2026-08-01
+
+    # Long Line
+
+    This deliberately oversized synthetic line contains more than one hundred and twenty characters so the configured structural length check must report it reliably.
+  'fixtures/defects/notes/marker-nested.md': |
+    ---
+    title: Nested Marker
+    description: "Synthetic nested marker"
+    type: note
+    ---
+
+    *Updated:* 2026-08-01
+
+    # Nested Marker
+
+    <!-- BEGIN MANAGED -->
+    Outer synthetic content.
+    <!-- BEGIN MANAGED -->
+    Inner synthetic content.
+    <!-- END MANAGED -->
+    <!-- END MANAGED -->
+  'fixtures/defects/notes/marker-orphaned.md': |
+    ---
+    title: Orphaned Marker
+    description: "Synthetic orphaned marker"
+    type: note
+    ---
+
+    *Updated:* 2026-08-01
+
+    # Orphaned Marker
+
+    <!-- END MANAGED -->
+  'fixtures/defects/notes/marker-unclosed.md': |
+    ---
+    title: Unclosed Marker
+    description: "Synthetic unclosed marker"
+    type: note
+    ---
+
+    *Updated:* 2026-08-01
+
+    # Unclosed Marker
+
+    <!-- BEGIN MANAGED -->
+    This block intentionally has no end marker.
+  'fixtures/defects/notes/missing-key.md': |
+    ---
+    title: Missing Key
+    description: "Synthetic missing frontmatter key"
+    ---
+
+    *Updated:* 2026-08-01
+
+    # Missing Key
+
+    The `type` key is deliberately absent.
+  'fixtures/defects/notes/stale.md': |
+    ---
+    title: Stale Note
+    description: "Synthetic stale note"
+    type: note
+    ---
+
+    *Updated:* 2024-01-01
+
+    # Stale Note
+
+    This note is older than the configured threshold.
+  'fixtures/defects/notes/unindexed.md': |
+    ---
+    title: Unindexed Note
+    description: "Synthetic missing index entry"
+    type: note
+    ---
+
+    *Updated:* 2026-08-01
+
+    # Unindexed Note
+
+    This file is deliberately absent from the synthetic index.
+  'fixtures/defects/notes/unquoted-description.md': |
+    ---
+    title: Unquoted Description
+    description: Synthetic unquoted description
+    type: note
+    ---
+
+    *Updated:* 2026-08-01
+
+    # Unquoted Description
+
+    The description scalar is deliberately unquoted.
+  'fixtures/revisions/identical-after.md': |
+    # Synthetic Revision
+
+    The two revisions are byte-identical.
+  'fixtures/revisions/identical-before.md': |
+    # Synthetic Revision
+
+    The two revisions are byte-identical.
+  'fixtures/revisions/whitespace-after.md': |
+    #   Synthetic Revision
+
+    Alpha   beta     gamma.
+  'fixtures/revisions/whitespace-before.md': |
+    # Synthetic Revision
+
+    Alpha beta gamma.

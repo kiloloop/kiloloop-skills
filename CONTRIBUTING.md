@@ -81,6 +81,21 @@ Everything that survives `git archive` must be ready for public distribution:
   governance or review history.
 - Keep provenance in private pull-request metadata, not distributed files.
 - Keep generated artifacts and environment-specific state out of commits.
+- Do not cite issues or pull requests by number. A short `#<number>` reference
+  resolves against whichever repository renders it, so it points somewhere
+  unintended once the file is distributed. Link to a full URL when a reference
+  is genuinely needed.
+
+## Changelog
+
+Record every user-visible change in [CHANGELOG.md](CHANGELOG.md) under
+`Unreleased`, in the same pull request that makes the change. Entries are read
+by people installing the skills, so describe the distributed artifact and the
+behavior they can observe rather than the development history that produced it.
+
+A change to a wrapper-form skill's `requires:` pin is always user-visible.
+Record it as an entry and add the new pin to the pinned-tool-versions table
+when the release is cut.
 
 ## Validation
 

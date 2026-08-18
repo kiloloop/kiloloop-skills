@@ -33,5 +33,8 @@ versions, and runs the declared wrapper smoke command plus its fixtures.
 
 ## Available skills
 
-- [`memory-lint`](skills/memory-lint/) — lint Markdown memory and documentation
-  corpora through the exact `memory-lint==0.1.0` release.
+- [`memory-lint`](skills/memory-lint/README.md) — lint Markdown memory and
+  documentation corpora through the exact `memory-lint==0.1.0` release, with
+  real fixture output and the skill's operating boundaries.
+- [`usage-cost`](skills/usage-cost/) — report a coding agent's locally recorded
+  token usage and what that usage would cost at published API list rates.

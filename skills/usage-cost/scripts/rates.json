@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "rate_table_version": "2026-08-16",
+  "currency": "USD",
+  "unit": "per_million_tokens",
+  "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+  "source_checked": "2026-08-17",
+  "effective_date_policy": "Rates are the standard list prices published at the source on source_checked, with no scheduled future change applied ahead of its effective date. A run reports rate_table_version so a figure can be tied to the prices it used; it does not reprice historical usage at the rates in force on the day that usage occurred.",
+  "note": "Rates are decimal strings so that loading them introduces no binary floating-point error. Cache rates are derived from the input rate using the multipliers below rather than stored per model, because the published pricing defines them that way.",
+  "cache_multipliers": {
+    "read": "0.1",
+    "write_5m": "1.25",
+    "write_1h": "2.0"
+  },
+  "models": {
+    "claude-fable-5": {
+      "display_name": "Claude Fable 5",
+      "input": "10.00",
+      "output": "50.00"
+    },
+    "claude-mythos-5": {
+      "display_name": "Claude Mythos 5",
+      "input": "10.00",
+      "output": "50.00"
+    },
+    "claude-opus-5": {
+      "display_name": "Claude Opus 5",
+      "input": "5.00",
+      "output": "25.00",
+      "speeds": {
+        "fast": {
+          "input": "10.00",
+          "output": "50.00"
+        }
+      }
+    },
+    "claude-opus-4-8": {
+      "display_name": "Claude Opus 4.8",
+      "input": "5.00",
+      "output": "25.00",
+      "speeds": {
+        "fast": {
+          "input": "10.00",
+          "output": "50.00"
+        }
+      }
+    },
+    "claude-opus-4-7": {
+      "display_name": "Claude Opus 4.7",
+      "input": "5.00",
+      "output": "25.00"
+    },
+    "claude-opus-4-6": {
+      "display_name": "Claude Opus 4.6",
+      "input": "5.00",
+      "output": "25.00"
+    },
+    "claude-opus-4-5": {
+      "display_name": "Claude Opus 4.5",
+      "input": "5.00",
+      "output": "25.00"
+    },
+    "claude-sonnet-5": {
+      "display_name": "Claude Sonnet 5",
+      "input": "2.00",
+      "output": "10.00"
+    },
+    "claude-sonnet-4-6": {
+      "display_name": "Claude Sonnet 4.6",
+      "input": "3.00",
+      "output": "15.00"
+    },
+    "claude-sonnet-4-5": {
+      "display_name": "Claude Sonnet 4.5",
+      "input": "3.00",
+      "output": "15.00"
+    },
+    "claude-haiku-4-5": {
+      "display_name": "Claude Haiku 4.5",
+      "input": "1.00",
+      "output": "5.00"
+    }
+  },
+  "non_billable_models": [
+    "<synthetic>"
+  ]
+}

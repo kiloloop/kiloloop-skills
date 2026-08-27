@@ -8,6 +8,21 @@ A release is a snapshot of the whole collection. Skills are distributed
 together but installed independently, so the exact tool versions each release
 pins are also recorded in [Pinned tool versions](#pinned-tool-versions).
 
+## [0.3.0] - 2026-08-27
+
+### Added
+
+- [`proof-before-done`](skills/proof-before-done/README.md) — a vendored receipt
+  checker that executes declared completion predicates, emits paste-ready
+  `PASS`/`FAIL`/`UNVERIFIED` evidence whose `EXEC`/`STATIC` labels identify the
+  attempted verification method, and exits nonzero when any claim fails or
+  lacks verification.
+- [`verify-numbers`](skills/verify-numbers/README.md) — a vendored skill that
+  distinguishes measured, calculated, estimated, and recalled quantities;
+  ships an LF- and CRLF-aware full-line counter with inspectable match evidence
+  and deterministic phantom-count and bare-CR fixtures; and documents
+  copy-paste request and reply shapes plus explicit visibility limits.
+
 ## [0.2.0] - 2026-08-18
 
 ### Added
@@ -78,8 +93,10 @@ reading every entry above.
 
 | Release | Skill | Pinned distribution |
 | --- | --- | --- |
+| 0.3.0 | `memory-lint` | `memory-lint==0.1.0` |
 | 0.2.0 | `memory-lint` | `memory-lint==0.1.0` |
 | 0.1.0 | `memory-lint` | `memory-lint==0.1.0` |
 
+[0.3.0]: https://github.com/kiloloop/kiloloop-skills/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/kiloloop/kiloloop-skills/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/kiloloop/kiloloop-skills/releases/tag/v0.1.0

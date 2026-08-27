@@ -38,3 +38,9 @@ versions, and runs the declared wrapper smoke command plus its fixtures.
   real fixture output and the skill's operating boundaries.
 - [`usage-cost`](skills/usage-cost/) — report a coding agent's locally recorded
   token usage and what that usage would cost at published API list rates.
+- [`verify-numbers`](skills/verify-numbers/README.md) — verify counts, deltas,
+  estimates, recalled values, and time-window metrics with auditable scope,
+  methods, and match evidence.
+- [`proof-before-done`](skills/proof-before-done/README.md) — execute declared
+  completion claims and emit paste-ready evidence before reporting work done,
+  verified, or tested.

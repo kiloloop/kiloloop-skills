@@ -1,0 +1,28 @@
+{
+  "claims": [
+    {
+      "claim": "command exits 0",
+      "type": "command_exit_zero",
+      "command": ["python3", "-c", "print('ready')"]
+    },
+    {
+      "claim": "tests pass",
+      "type": "tests_pass",
+      "command": ["python3", "-c", "import sys; print('intentional failure', file=sys.stderr); raise SystemExit(1)"]
+    },
+    {
+      "claim": "fixture file exists",
+      "type": "file_exists",
+      "path": "present.txt"
+    },
+    {
+      "claim": "fixture contains the verified marker",
+      "type": "string_present",
+      "path": "present.txt",
+      "string": "verification-ready"
+    },
+    {
+      "claim": "reviewed head is current"
+    }
+  ]
+}

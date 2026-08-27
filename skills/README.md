@@ -37,3 +37,13 @@ for wrapper pin, failure-message, install, and clean-environment obligations.
 - [`usage-cost`](usage-cost/) — report a coding agent's locally recorded token
   usage and what that usage would cost at published API list rates. See its
   [README](usage-cost/README.md) for example output.
+- [`verify-numbers`](verify-numbers/) — verify counts, deltas, estimates,
+  remembered values, and time-window metrics before quoting them. Its vendored
+  full-line counter exposes every match so phantom substring counts are
+  inspectable. See its [README](verify-numbers/README.md) for the falsifiable
+  claim, example output, tradeoffs, and limits.
+- [`proof-before-done`](proof-before-done/) — execute completion claims against
+  live state and emit paste-ready receipts with the exact command or static
+  predicate, exit code, observed value, timestamp, and verification status. See
+  its [README](proof-before-done/README.md) for the falsifiable claim, fixture
+  output, tradeoffs, and limits.

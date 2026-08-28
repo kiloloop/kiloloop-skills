@@ -44,3 +44,6 @@ versions, and runs the declared wrapper smoke command plus its fixtures.
 - [`proof-before-done`](skills/proof-before-done/README.md) — execute declared
   completion claims and emit paste-ready evidence before reporting work done,
   verified, or tested.
+- [`render-check`](skills/render-check/README.md) — review the surface a reader
+  actually sees, with screenshots and measured layout across viewports,
+  themes, and states, before reporting it done.

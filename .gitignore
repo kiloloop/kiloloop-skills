@@ -12,3 +12,12 @@ venv/
 *.pem
 *.key
 .DS_Store
+
+# Coding-agent runtime artifacts: per-checkout working files describing how an
+# agent operates locally, never part of the distributed collection. Kept
+# untracked so `git add -A` in a fresh clone cannot pick them up.
+.claude/
+.codex/
+.worktrees/
+AGENTS.md
+CLAUDE.md

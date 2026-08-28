@@ -47,3 +47,9 @@ for wrapper pin, failure-message, install, and clean-environment obligations.
   predicate, exit code, observed value, timestamp, and verification status. See
   its [README](proof-before-done/README.md) for the falsifiable claim, fixture
   output, tradeoffs, and limits.
+- [`render-check`](render-check/) — review the surface a reader actually sees
+  across a declared viewport × theme × state matrix. Its vendored checker
+  enumerates uncaptured cells, rejects findings without real screenshot bytes,
+  labels source-only inference, and surfaces measured overflow. See its
+  [README](render-check/README.md) for the falsifiable claim, fixture output,
+  tradeoffs, and limits.

@@ -18,7 +18,7 @@ predicate and its exact inputs:
 | --- | --- | --- |
 | `tests_pass` | `command` string array | Runs the test command; exit `0` passes. |
 | `command_exit_zero` | `command` string array | Runs the command; exit `0` passes. |
-| `file_exists` | `path` | Reads live filesystem state; a regular file passes. |
+| `file_exists` | `path` | Stats the live path; a regular file passes, an absent path fails, and a path the checker cannot inspect is `UNVERIFIED`. |
 | `string_present` | `path`, `string` | Reads the UTF-8 file and looks for the exact string. |
 | `git_ref_contains` | `commit`, `ref`; optional `repo` | Runs `git merge-base --is-ancestor`; exit `0` passes. |
 
@@ -63,7 +63,7 @@ timestamp, and `PASS`, `FAIL`, or `UNVERIFIED`.
 `FAIL` means a predicate executed and observed a false result, a nonzero exit,
 or a timeout. `UNVERIFIED` means the predicate was missing or unsupported, its
 required inputs were malformed, the command could not start, or the static
-input could not be read. In both cases the checker exits nonzero.
+input could not be inspected or read. In both cases the checker exits nonzero.
 
 - Exit `0`: every claim passed.
 - Exit `1`: at least one claim failed or was not verified. Do not report done.

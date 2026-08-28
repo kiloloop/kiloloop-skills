@@ -8,6 +8,24 @@ A release is a snapshot of the whole collection. Skills are distributed
 together but installed independently, so the exact tool versions each release
 pins are also recorded in [Pinned tool versions](#pinned-tool-versions).
 
+## [0.4.0] - 2026-08-28
+
+### Added
+
+- Add `render-check`, a vendored skill that reviews the surface a reader
+  actually sees across a declared viewport × theme × state matrix
+  ([README](skills/render-check/README.md)).
+- Ship a standard-library `render_check.py` that enumerates uncaptured cells,
+  rejects findings without real screenshot bytes, and surfaces measured
+  horizontal overflow ([SKILL.md](skills/render-check/SKILL.md)).
+
+### Fixed
+
+- Report `UNVERIFIED` from `proof-before-done`'s `file_exists` when the path
+  cannot be inspected, matching `string_present`, instead of reporting the
+  file absent or aborting the run
+  ([README](skills/proof-before-done/README.md)).
+
 ## [0.3.0] - 2026-08-27
 
 ### Added
@@ -93,10 +111,12 @@ reading every entry above.
 
 | Release | Skill | Pinned distribution |
 | --- | --- | --- |
+| 0.4.0 | `memory-lint` | `memory-lint==0.1.0` |
 | 0.3.0 | `memory-lint` | `memory-lint==0.1.0` |
 | 0.2.0 | `memory-lint` | `memory-lint==0.1.0` |
 | 0.1.0 | `memory-lint` | `memory-lint==0.1.0` |
 
+[0.4.0]: https://github.com/kiloloop/kiloloop-skills/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/kiloloop/kiloloop-skills/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/kiloloop/kiloloop-skills/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/kiloloop/kiloloop-skills/releases/tag/v0.1.0

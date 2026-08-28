@@ -1,0 +1,61 @@
+{
+  "surface": "docs/index.html served at http://localhost:8000/",
+  "matrix": {
+    "viewports": [
+      {"name": "desktop", "width": 1280},
+      {"name": "mobile", "width": 320}
+    ],
+    "themes": ["light", "dark"],
+    "states": ["default"]
+  },
+  "captures": [
+    {
+      "id": "desktop-light",
+      "viewport": "desktop",
+      "theme": "light",
+      "state": "default",
+      "screenshot": "screenshots/desktop-light.png",
+      "metrics": {"viewport_width": 1280, "scroll_width": 1280}
+    },
+    {
+      "id": "desktop-dark",
+      "viewport": "desktop",
+      "theme": "dark",
+      "state": "default",
+      "screenshot": "screenshots/desktop-dark.png",
+      "metrics": {"viewport_width": 1280, "scroll_width": 1280}
+    },
+    {
+      "id": "mobile-light",
+      "viewport": "mobile",
+      "theme": "light",
+      "state": "default",
+      "screenshot": "screenshots/mobile-light.png",
+      "metrics": {"viewport_width": 320, "scroll_width": 348}
+    }
+  ],
+  "findings": [
+    {
+      "id": "F-001",
+      "summary": "Hero image renders at its 2x export size and dominates the content column",
+      "evidence": "rendered",
+      "capture": "desktop-light"
+    },
+    {
+      "id": "F-002",
+      "summary": "Table header wraps onto two lines at tablet width",
+      "evidence": "rendered",
+      "capture": "tablet-light"
+    },
+    {
+      "id": "F-003",
+      "summary": "Badge contrast looks low in the dark stylesheet",
+      "evidence": "source-only"
+    },
+    {
+      "id": "F-004",
+      "summary": "Footer links overlap at narrow widths",
+      "evidence": "rendered"
+    }
+  ]
+}

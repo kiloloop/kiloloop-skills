@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
@@ -229,3 +232,126 @@ def test_invalid_claims_document_has_distinct_input_exit(tmp_path: Path) -> None
     assert completed.returncode == 2
     assert completed.stdout == ""
     assert "claims JSON must contain a non-empty claims array" in completed.stderr
+
+
+def test_untraversable_path_is_unverified_for_both_static_predicates(
+    tmp_path: Path,
+) -> None:
+    if os.name != "posix":
+        pytest.skip("POSIX directory permissions are needed to make a path untraversable")
+    if os.geteuid() == 0:
+        pytest.skip("root bypasses directory permissions, so the path stays traversable")
+
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    target = locked / "target.txt"
+    target.write_text("verification-ready\n", encoding="utf-8")
+    claims_file = tmp_path / "claims.json"
+    claims_file.write_text(
+        json.dumps(
+            {
+                "claims": [
+                    {
+                        "claim": "file exists",
+                        "type": "file_exists",
+                        "path": "locked/target.txt",
+                    },
+                    {
+                        "claim": "marker is present",
+                        "type": "string_present",
+                        "path": "locked/target.txt",
+                        "string": "verification-ready",
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    locked.chmod(0)
+    try:
+        try:
+            target.stat()
+        except PermissionError:
+            pass
+        else:
+            pytest.skip("this filesystem did not enforce directory permissions")
+        completed = run_checker(claims_file)
+    finally:
+        locked.chmod(0o700)
+
+    assert completed.returncode == 1, completed.stdout + completed.stderr
+    receipts = completed.stdout.splitlines()
+    assert len(receipts) == 2
+    assert receipts[0].startswith(
+        'UNVERIFIED · claim="file exists"'
+        ' · command=STATIC file_exists(path="locked/target.txt") · exit_code=N/A '
+    )
+    assert "could_not_stat=" in receipts[0]
+    assert receipts[1].startswith(
+        'UNVERIFIED · claim="marker is present"'
+        ' · command=STATIC string_present(path="locked/target.txt",string="verification-ready")'
+        " · exit_code=N/A "
+    )
+    assert "could_not_read=" in receipts[1]
+
+
+def test_absent_path_stays_fail_not_unverified(tmp_path: Path) -> None:
+    claims_file = tmp_path / "claims.json"
+    claims_file.write_text(
+        json.dumps(
+            {
+                "claims": [
+                    {
+                        "claim": "artifact exists",
+                        "type": "file_exists",
+                        "path": "missing/artifact.json",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    completed = run_checker(claims_file)
+
+    assert completed.returncode == 1
+    assert completed.stdout.startswith('FAIL · claim="artifact exists"')
+    assert 'command=STATIC file_exists(path="missing/artifact.json")' in completed.stdout
+    assert 'observed="regular_file=false"' in completed.stdout
+
+
+def test_path_with_embedded_nul_is_unverified_for_both_static_predicates(
+    tmp_path: Path,
+) -> None:
+    claims_file = tmp_path / "claims.json"
+    claims_file.write_text(
+        json.dumps(
+            {
+                "claims": [
+                    {
+                        "claim": "file exists",
+                        "type": "file_exists",
+                        "path": "nul\u0000byte.txt",
+                    },
+                    {
+                        "claim": "marker is present",
+                        "type": "string_present",
+                        "path": "nul\u0000byte.txt",
+                        "string": "ready",
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    completed = run_checker(claims_file)
+
+    assert completed.returncode == 1, completed.stdout + completed.stderr
+    receipts = completed.stdout.splitlines()
+    assert len(receipts) == 2
+    assert receipts[0].startswith('UNVERIFIED · claim="file exists"')
+    assert "could_not_stat=" in receipts[0]
+    assert receipts[1].startswith('UNVERIFIED · claim="marker is present"')
+    assert "could_not_read=" in receipts[1]

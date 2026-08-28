@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import stat
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -149,11 +150,23 @@ def _check_file_exists(claim: str, raw_path: object, *, base: Path) -> Receipt:
         return _unverified(claim, "file_exists requires a non-empty path")
     display_path = _display_path(raw_path)
     path = _resolved_path(base, raw_path)
-    exists = path.is_file()
+    command = _static_text("file_exists", path=display_path)
+    try:
+        mode = path.stat().st_mode
+    except (FileNotFoundError, NotADirectoryError):
+        exists = False
+    except (OSError, ValueError) as error:
+        return _unverified(
+            claim,
+            f"could_not_stat={error}",
+            command=command,
+        )
+    else:
+        exists = stat.S_ISREG(mode)
     return Receipt(
         "PASS" if exists else "FAIL",
         claim,
-        _static_text("file_exists", path=display_path),
+        command,
         "N/A",
         f"regular_file={str(exists).lower()}",
         _timestamp(),
@@ -177,7 +190,7 @@ def _check_string_present(
     command = _static_text("string_present", path=display_path, string=raw_string)
     try:
         contents = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as error:
+    except (OSError, UnicodeError, ValueError) as error:
         return _unverified(
             claim,
             f"could_not_read={error}",

@@ -53,6 +53,7 @@ DEFAULT_RATES = Path(__file__).resolve().parent / "rates.json"
 PER_MILLION = Decimal(1_000_000)
 CENTS = Decimal("0.01")
 MICRO = Decimal("0.000001")
+CACHE_TIERS = ("read", "write_5m", "write_1h")
 
 
 class RateTableError(Exception):
@@ -97,13 +98,10 @@ class RateTable:
             self.version = str(payload["rate_table_version"])
             self.currency = str(payload["currency"])
             multipliers = payload["cache_multipliers"]
-            self._read_multiplier = _rate("cache_multipliers.read", multipliers["read"])
-            self._write_5m_multiplier = _rate(
-                "cache_multipliers.write_5m", multipliers["write_5m"]
-            )
-            self._write_1h_multiplier = _rate(
-                "cache_multipliers.write_1h", multipliers["write_1h"]
-            )
+            self._multipliers = {
+                tier: _rate(f"cache_multipliers.{tier}", multipliers[tier])
+                for tier in CACHE_TIERS
+            }
             models = payload["models"]
         except (KeyError, TypeError) as error:
             raise RateTableError(f"rate table is missing required data: {error}") from None
@@ -134,12 +132,38 @@ class RateTable:
                 raise RateTableError(f"{name} is missing the required {field_name!r} rate")
             _rate(f"{name}.{field_name}", rates[field_name])
 
+    @staticmethod
+    def _validate_multipliers(name: str, entry: dict) -> None:
+        """Check a per-model `cache_multipliers` block, when one is present.
+
+        The table's multipliers are the default; an entry may override any tier
+        for itself. The override is validated like every other rate: a table
+        that lists a model with a corrupt override is a configuration error,
+        not a model that quietly prices at the default.
+        """
+        overrides = entry.get("cache_multipliers")
+        if overrides is None:
+            return
+        if not isinstance(overrides, dict):
+            raise RateTableError(
+                f"{name}.cache_multipliers must be an object with any of "
+                f"{', '.join(CACHE_TIERS)}"
+            )
+        for tier, value in overrides.items():
+            if tier not in CACHE_TIERS:
+                raise RateTableError(
+                    f"{name}.cache_multipliers.{tier} is not a cache tier; expected one of "
+                    f"{', '.join(CACHE_TIERS)}"
+                )
+            _rate(f"{name}.cache_multipliers.{tier}", value)
+
     @classmethod
     def _validate_model(cls, model_id: str, entry: object) -> None:
         name = f"models.{model_id}"
         if not isinstance(entry, dict):
             raise RateTableError(f"{name} must be an object with 'input' and 'output' rates")
         cls._validate_rates(name, entry)
+        cls._validate_multipliers(name, entry)
         speeds = entry.get("speeds")
         if speeds is None:
             return
@@ -155,6 +179,7 @@ class RateTable:
             # exactly the wrong-rate confident figure this table refuses to
             # produce.
             cls._validate_rates(variant_name, variant_entry)
+            cls._validate_multipliers(variant_name, variant_entry)
 
     @classmethod
     def load(cls, path: Path) -> RateTable:
@@ -187,17 +212,28 @@ class RateTable:
             return None
 
         rates = entry
+        layers: list[object] = [entry.get("cache_multipliers")]
         if variant:
             speeds = entry.get("speeds")
             variant_rates = speeds.get(variant) if isinstance(speeds, dict) else None
             if not isinstance(variant_rates, dict):
                 return None
             rates = {**entry, **variant_rates}
+            layers.append(variant_rates.get("cache_multipliers"))
 
         # Loading validated every listed entry, so a known model's rates are
         # guaranteed present and parseable here.
         input_rate = _rate(f"models.{base}.input", rates["input"])
         output_rate = _rate(f"models.{base}.output", rates["output"])
+
+        # Cache tiers are multiples of the input rate. The table's multipliers
+        # apply unless the model — or, on top of that, the variant — overrides
+        # a tier for itself; each layer overrides only the tiers it names.
+        multipliers = dict(self._multipliers)
+        for layer in layers:
+            if isinstance(layer, dict):
+                for tier, value in layer.items():
+                    multipliers[tier] = _rate(f"models.{base}.cache_multipliers.{tier}", value)
 
         display = str(entry.get("display_name", base))
         if variant:
@@ -206,9 +242,9 @@ class RateTable:
             display_name=display,
             input=input_rate,
             output=output_rate,
-            cache_read=input_rate * self._read_multiplier,
-            cache_write_5m=input_rate * self._write_5m_multiplier,
-            cache_write_1h=input_rate * self._write_1h_multiplier,
+            cache_read=input_rate * multipliers["read"],
+            cache_write_5m=input_rate * multipliers["write_5m"],
+            cache_write_1h=input_rate * multipliers["write_1h"],
         )
 
 

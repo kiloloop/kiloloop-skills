@@ -74,8 +74,9 @@ python scripts/usage_cost.py --format json
 | `--rates` | Use a different rate table. |
 | `--format` | `table` (default) or `json`. |
 
-Standard library only. Nothing to install, no network access, no dependency on
-any package index.
+Standard library only. Nothing to install, no dependency on any package
+index, and the report makes no network calls. (The optional rate-table refresh
+described below is the one script that does.)
 
 ### Exit codes carry meaning
 
@@ -141,6 +142,12 @@ a cost on one line otherwise read as the price of those tokens.
 **Decimal arithmetic throughout.** Rates are stored as decimal strings, so no
 binary floating-point error enters the figure.
 
+**Cache tiers are multiples of the input rate, per model.** The table's
+`cache_multipliers` are the default — reads at 0.1x, 5-minute writes at 1.25x,
+1-hour writes at 2x — and an entry may override any tier for itself. Claude
+Fable 5.1 and Claude Mythos 5.1 read cache at 0.025x input, so a cache-heavy
+day on either would be over-priced four times over at the default.
+
 ## What it cannot see
 
 - **Only what this machine wrote.** Usage from other machines, other runtimes,
@@ -150,7 +157,8 @@ binary floating-point error enters the figure.
   rather than per token; requests are reported separately.
 - **Rates can be stale.** `scripts/rates.json` is a versioned data file stamped
   by `rate_table_version`. Wrong rates produce a confidently wrong report, and
-  the tests cannot catch that — they pin arithmetic, not rates.
+  the tests cannot catch that — they pin arithmetic, not rates. The refresh
+  script below narrows the window; it does not close it.
 
 ## Runtime support
 
@@ -175,10 +183,33 @@ fixture with hand-derived arithmetic, and in treating unknown models and
 unsupported runtimes as first-class reported states with their own exit codes.
 For browsing personal usage interactively, `ccusage` is the better experience.
 
+## Refreshing the rate table
+
+`scripts/refresh_rates.py` compares the table with the
+[models.dev](https://models.dev) catalog (open source, MIT) read from its
+repository at one exact commit, and merges new or changed rows with `--write`.
+Run it when a model launches; the report itself never fetches anything.
+
+```
+$ python scripts/refresh_rates.py --commit f7af17dfaf28e3e2fb7dbf6ca72ba73e8436d59e
+anomalyco/models.dev@f7af17dfaf28 (anthropic) vs rates.json (rate_table_version 2026-09-02)
+  absent upstream, left as-is: claude-mythos-5, claude-mythos-5-1
+  dated aliases covered by their base id: claude-haiku-4-5-20251001, claude-opus-4-5-20251101, claude-sonnet-4-5-20250929
+  every catalog row agrees with the table
+```
+
+Exit `0` is agreement, `1` is differences found and not written, `2` is a
+catalog or table that could not be read or an argument that was refused. The
+commit must be a full 40-character SHA; branches, tags, and short SHAs are
+refused, and `--write` always needs one to record. Models the catalog does not
+list, and the 1-hour cache-write rate it has no field for, stay hand-entered
+from the published pricing page — the script reports them and leaves them
+alone.
+
 ## Tests
 
 ```bash
-python -m pytest -q fixtures/test_usage_cost.py
+python -m pytest -q fixtures/
 ```
 
 The central claim is exact and hand-checkable: the synthetic transcript in

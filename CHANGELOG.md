@@ -8,6 +8,23 @@ A release is a snapshot of the whole collection. Skills are distributed
 together but installed independently, so the exact tool versions each release
 pins are also recorded in [Pinned tool versions](#pinned-tool-versions).
 
+## [0.4.1] - 2026-09-02
+
+### Added
+
+- Add `claude-fable-5-1` and `claude-mythos-5-1` to the `usage-cost` rate
+  table at $10 / $50 per million tokens, with cache reads at 0.025x input
+  ([SKILL.md](skills/usage-cost/SKILL.md)).
+- Add `refresh_rates.py` to `usage-cost`, which compares the rate table with
+  the models.dev catalog at a pinned commit and merges new or changed rows on
+  request ([README](skills/usage-cost/README.md)).
+
+### Changed
+
+- Allow a `usage-cost` rate-table entry to carry its own `cache_multipliers`,
+  overriding the table default for the tiers it names; a malformed override is
+  a rate-table error ([SKILL.md](skills/usage-cost/SKILL.md)).
+
 ## [0.4.0] - 2026-08-28
 
 ### Added
@@ -111,11 +128,13 @@ reading every entry above.
 
 | Release | Skill | Pinned distribution |
 | --- | --- | --- |
+| 0.4.1 | `memory-lint` | `memory-lint==0.1.0` |
 | 0.4.0 | `memory-lint` | `memory-lint==0.1.0` |
 | 0.3.0 | `memory-lint` | `memory-lint==0.1.0` |
 | 0.2.0 | `memory-lint` | `memory-lint==0.1.0` |
 | 0.1.0 | `memory-lint` | `memory-lint==0.1.0` |
 
+[0.4.1]: https://github.com/kiloloop/kiloloop-skills/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/kiloloop/kiloloop-skills/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/kiloloop/kiloloop-skills/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/kiloloop/kiloloop-skills/compare/v0.1.0...v0.2.0

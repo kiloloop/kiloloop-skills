@@ -165,17 +165,26 @@ Rates live in `scripts/rates.json`, a versioned data file the report stamps by
 `rate_table_version`. Rates are per million tokens, stored as decimal strings so
 loading introduces no floating-point error, and all arithmetic is decimal.
 
-Only input and output rates are stored per model. Cache rates are derived, the
-way the published pricing defines them:
+Only input and output rates are stored per model. Cache rates are derived
+from the input rate by multiplier, the way the published pricing defines them.
+The table's `cache_multipliers` are the default:
 
-| Tier | Rate |
+| Tier | Default |
 | --- | --- |
 | Cache read | input x 0.1 |
 | Cache write, 5-minute | input x 1.25 |
 | Cache write, 1-hour | input x 2.0 |
 
+A model whose published cache pricing departs from the default carries its own
+`cache_multipliers` block, which overrides only the tiers it names. Claude
+Fable 5.1 and Claude Mythos 5.1 bill cache reads at 0.025x input ($0.25 per
+million against $10 input), so their entries carry `{"read": "0.025"}` and
+keep the default write multipliers. A malformed override is a rate-table error
+(exit `2`), not a model that quietly prices at the default.
+
 A model may also carry a `speeds` block for a variant that prices differently,
-such as fast mode.
+such as fast mode. A variant inherits the model's multipliers and may layer its
+own on top.
 
 **Model-id resolution is deliberately narrow**: an exact match, then the same id
 with a trailing `-YYYYMMDD` release-date suffix removed. Nothing is matched by
@@ -203,14 +212,50 @@ sitting on one line would otherwise read as the price of those tokens.
 1. Read the current published rates.
 2. Edit `scripts/rates.json`: add or amend entries under `models`, and set
    `rate_table_version` to the date of the change.
-3. If a cache multiplier changed, edit `cache_multipliers` — not the per-model
-   entries.
+3. If a cache multiplier changed for every model, edit the table's
+   `cache_multipliers`; if it changed for one model, give that entry its own
+   block.
 4. Run the fixtures. The exact-cost claim is pinned to the shipped rates, so a
    rate change is expected to fail it; re-derive the expected figure by hand and
    update the derivation comment alongside the number.
 
 New model ids are additive: adding one prices previously-unpriced usage without
 changing any existing figure.
+
+### Refreshing from the models.dev catalog
+
+`scripts/refresh_rates.py` compares the table with the
+[models.dev](https://models.dev) catalog — an open, MIT-licensed database of
+model pricing — read from its repository at one exact commit, and merges new
+or changed rows on request. It is a maintenance step for when a model launches,
+not something the report runs: the report never touches the network.
+
+```
+$ python scripts/refresh_rates.py --commit f7af17dfaf28e3e2fb7dbf6ca72ba73e8436d59e
+anomalyco/models.dev@f7af17dfaf28 (anthropic) vs rates.json (rate_table_version 2026-09-02)
+  absent upstream, left as-is: claude-mythos-5, claude-mythos-5-1
+  dated aliases covered by their base id: claude-haiku-4-5-20251001, claude-opus-4-5-20251101, claude-sonnet-4-5-20250929
+  every catalog row agrees with the table
+```
+
+Exit `0` means the table agrees with the catalog, `1` that differences were
+found and not written, `2` that the catalog or the table could not be read or
+an argument was refused. Add `--write` to apply additions and price changes;
+the script then moves `rate_table_version` to the change date and records the
+commit it read under `catalog_cross_check`. The commit is a full 40-character
+SHA and nothing else: branches, tags, and abbreviated SHAs are refused before
+anything is read, because the catalog's published JSON carries no version and
+only an exact commit names one catalog. `--write` always needs `--commit`,
+even against a local `--catalog-dir`, so the provenance block is never written
+empty.
+
+Two things the catalog cannot express stay hand-maintained from the published
+pricing page, and the script says so rather than guessing: models it does not
+list (limited-availability models are reported as absent upstream and left
+untouched), and the 1-hour cache-write rate (the catalog carries a single
+cache-write price, compared against the 5-minute tier and never written).
+`source_checked`, the date a person last read the published page, is never
+moved by the script.
 
 ## Runtime support
 
@@ -320,9 +365,10 @@ Observations the report supports, for when the reader asks what drives the
 figure. These are readings of the report, not advice; whether anything should
 change is the reader's call.
 
-- **Cache reads are the cheap class.** A cache read bills at 0.1x the model's
-  input rate, so a large cache-read share means repeated context was re-read
-  at a tenth of the price of resending it uncached.
+- **Cache reads are the cheap class.** A cache read bills at the model's read
+  multiplier — 0.1x input on most models, 0.025x on Claude Fable 5.1 and
+  Claude Mythos 5.1 — so a large cache-read share means repeated context was
+  re-read at a small fraction of the price of resending it uncached.
 - **Cache writes bill above the input rate** — 1.25x for the 5-minute
   lifetime, 2x for the 1-hour. Writes rivaling reads in the JSON cache split
   suggest the cached prefix keeps changing, so it is being re-written rather

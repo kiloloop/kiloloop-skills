@@ -1,18 +1,40 @@
 {
   "schema_version": 1,
-  "rate_table_version": "2026-08-16",
+  "rate_table_version": "2026-09-02",
   "currency": "USD",
   "unit": "per_million_tokens",
   "source": "https://platform.claude.com/docs/en/about-claude/pricing",
-  "source_checked": "2026-08-17",
+  "source_checked": "2026-09-02",
+  "catalog_cross_check": {
+    "source": "https://github.com/anomalyco/models.dev",
+    "provider": "anthropic",
+    "commit": "f7af17dfaf28e3e2fb7dbf6ca72ba73e8436d59e",
+    "checked": "2026-09-02"
+  },
   "effective_date_policy": "Rates are the standard list prices published at the source on source_checked, with no scheduled future change applied ahead of its effective date. A run reports rate_table_version so a figure can be tied to the prices it used; it does not reprice historical usage at the rates in force on the day that usage occurred.",
-  "note": "Rates are decimal strings so that loading them introduces no binary floating-point error. Cache rates are derived from the input rate using the multipliers below rather than stored per model, because the published pricing defines them that way.",
+  "note": "Rates are decimal strings so that loading them introduces no binary floating-point error. Cache rates are derived from the input rate using the multipliers below rather than stored per model, because the published pricing defines them that way. A model whose published cache pricing departs from the table's multipliers carries its own cache_multipliers block, which overrides only the tiers it names.",
   "cache_multipliers": {
     "read": "0.1",
     "write_5m": "1.25",
     "write_1h": "2.0"
   },
   "models": {
+    "claude-fable-5-1": {
+      "display_name": "Claude Fable 5.1",
+      "input": "10.00",
+      "output": "50.00",
+      "cache_multipliers": {
+        "read": "0.025"
+      }
+    },
+    "claude-mythos-5-1": {
+      "display_name": "Claude Mythos 5.1",
+      "input": "10.00",
+      "output": "50.00",
+      "cache_multipliers": {
+        "read": "0.025"
+      }
+    },
     "claude-fable-5": {
       "display_name": "Claude Fable 5",
       "input": "10.00",

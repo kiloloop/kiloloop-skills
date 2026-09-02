@@ -2,7 +2,7 @@
 
 The central claim is exact and hand-checkable: the synthetic transcript in
 `data/priced/` contains a known set of token counts, and at the rates pinned in
-`scripts/rates.json` those tokens come to exactly $1.2840. Every figure asserted
+`scripts/rates.json` those tokens come to exactly $2.1040. Every figure asserted
 below is derived by hand in `EXPECTED_COST_DERIVATION` so a reviewer can check
 the arithmetic without running anything.
 """
@@ -36,12 +36,14 @@ import runtime_adapters
 import usage_cost
 
 # Per-million-token list rates from scripts/rates.json, with cache rates derived
-# as input x {read 0.1, write_5m 1.25, write_1h 2.0}:
+# as input x {read 0.1, write_5m 1.25, write_1h 2.0}, except where a model
+# carries its own read multiplier (claude-fable-5-1: read 0.025):
 #
 #   claude-opus-5     in 5.00   out 25.00  read 0.50  w5m 6.25   w1h 10.00
 #   claude-opus-5#fast in 10.00 out 50.00
 #   claude-sonnet-5   in 2.00   out 10.00  read 0.20  w5m 2.50
 #   claude-opus-4-8   in 5.00   out 25.00             w5m 6.25
+#   claude-fable-5-1  in 10.00  out 50.00  read 0.25  w5m 12.50  w1h 20.00
 #
 # msg_alpha_a  opus-5      1000 in, 2000 out, 400000 read, 80000 w5m, 20000 w1h
 #              0.005 + 0.050 + 0.200 + 0.500 + 0.200                  = 0.9550
@@ -51,11 +53,14 @@ import usage_cost
 #              0.0025 + 0.0375 + 0.100                                = 0.1400
 # msg_alpha_f  opus-5 fast 1000 in, 1000 out
 #              0.010 + 0.050                                          = 0.0600
-#                                                              total  = 1.2840
-EXPECTED_COST_DERIVATION = Decimal("1.2840")
+# msg_alpha_g  fable-5-1   1000 in,  200 out, 400000 read, 40000 w5m, 10000 w1h
+#              0.010 + 0.010 + 0.100 + 0.500 + 0.200                  = 0.8200
+#                                                              total  = 2.1040
+EXPECTED_COST_DERIVATION = Decimal("2.1040")
 EXPECTED_SONNET_COST = Decimal("0.1290")
+EXPECTED_FABLE_5_1_COST = Decimal("0.8200")
 
-EXPECTED_PRICED_TOKENS = 503_000 + 142_500 + 18_000 + 2_000  # 665,500
+EXPECTED_PRICED_TOKENS = 503_000 + 142_500 + 18_000 + 2_000 + 451_200  # 1,116,700
 
 
 def run_cli(*arguments: str) -> subprocess.CompletedProcess[str]:
@@ -84,13 +89,16 @@ def test_known_usage_prices_to_an_exact_figure() -> None:
     assert payload["unpriced_models"] == []
     assert Decimal(payload["totals"]["cost"]) == EXPECTED_COST_DERIVATION
     assert payload["totals"]["tokens"] == EXPECTED_PRICED_TOKENS
-    assert payload["totals"]["requests"] == 4
+    assert payload["totals"]["requests"] == 5
 
     by_id = {model["model_id"]: model for model in payload["models"]}
     assert Decimal(by_id["claude-opus-5"]["cost"]) == Decimal("0.9550")
     assert Decimal(by_id["claude-sonnet-5"]["cost"]) == EXPECTED_SONNET_COST
     assert Decimal(by_id["claude-opus-4-8"]["cost"]) == Decimal("0.1400")
     assert Decimal(by_id["claude-opus-5#fast"]["cost"]) == Decimal("0.0600")
+    # 400,000 cache reads at the model's own 0.025x multiplier: $0.10, where the
+    # table default of 0.1x would have charged $0.40 for the same tokens.
+    assert Decimal(by_id["claude-fable-5-1"]["cost"]) == EXPECTED_FABLE_5_1_COST
 
     # The unsplit cache-creation total is attributed to the 5-minute tier.
     assert by_id["claude-opus-4-8"]["tokens"]["cache_write_5m"] == 16_000
@@ -101,11 +109,12 @@ def test_repeated_transcript_records_are_counted_once() -> None:
     payload, completed = run_json("--data-root", str(PRICED))
 
     assert completed.returncode == 0, completed.stderr
-    # The transcript holds seven usage-bearing lines for four distinct requests.
+    # The transcript holds eight usage-bearing lines for five distinct requests.
     assert payload["collection"]["duplicate_records"] == 3
-    assert payload["totals"]["requests"] == 4
-    # Summing every line instead would inflate the cost well past the true figure.
-    assert Decimal(payload["totals"]["cost"]) < Decimal("2.00")
+    assert payload["totals"]["requests"] == 5
+    # Summing every line instead would inflate the cost well past the true
+    # figure: one extra copy of the triple-recorded request already exceeds this.
+    assert Decimal(payload["totals"]["cost"]) < EXPECTED_COST_DERIVATION + Decimal("0.9550")
 
 
 def test_malformed_lines_are_skipped_without_failing_the_run() -> None:
@@ -135,7 +144,7 @@ def test_window_filter_excludes_earlier_days() -> None:
     assert completed.returncode == 0, completed.stderr
     # Dropping the 2026-08-10 request removes exactly its 0.9550 contribution.
     assert Decimal(payload["totals"]["cost"]) == EXPECTED_COST_DERIVATION - Decimal("0.9550")
-    assert payload["totals"]["requests"] == 3
+    assert payload["totals"]["requests"] == 4
     # One *request* is excluded, not its three raw copies: reconciliation now
     # runs before the window, so the counter reports requests throughout.
     assert payload["collection"]["filtered_out"] == 1
@@ -226,8 +235,8 @@ def test_days_are_bucketed_in_the_requested_zone_not_utc() -> None:
     )
     assert completed.returncode == 0, completed.stderr
     # 11:15Z on the 11th is 20:15 on the 11th in Tokyo, so it stays excluded,
-    # while 14:30Z and 15:05Z on the 12th stay included.
-    assert payload["totals"]["requests"] == 2
+    # while 14:30Z, 15:05Z and 16:00Z on the 12th stay included.
+    assert payload["totals"]["requests"] == 3
     assert payload["timezone"] == "Asia/Tokyo"
 
 
@@ -269,7 +278,9 @@ def test_summary_periods_sum_the_days_they_claim() -> None:
             collection.records, rates, runtime_adapters.CLAUDE_CODE, date(2026, 8, 12)
         )
     }
-    assert rows["today"].cost == Decimal("0.1400") + Decimal("0.0600")
+    assert rows["today"].cost == (
+        Decimal("0.1400") + Decimal("0.0600") + EXPECTED_FABLE_5_1_COST
+    )
     assert rows["yesterday"].cost == EXPECTED_SONNET_COST
     assert rows["this_week"].since == "2026-08-10"
     assert rows["this_week"].cost == EXPECTED_COST_DERIVATION
@@ -323,6 +334,123 @@ def test_sonnet_5_priced_at_the_current_published_rate() -> None:
     assert sonnet.output == Decimal("10.00")
     assert sonnet.cache_read == Decimal("0.200")
     assert sonnet.cache_write_5m == Decimal("2.5000")
+
+
+def test_fable_5_1_cache_reads_price_at_a_fortieth_of_input() -> None:
+    """The published rate is $0.25 per million cache reads on Claude Fable 5.1
+    and Claude Mythos 5.1 — 0.025x input, where every other model is 0.1x.
+
+    Pinned against the shipped table directly, like the Sonnet rate above:
+    the override's arithmetic is proved by the synthetic table below, but only
+    this asserts that the shipped table actually carries it.
+    """
+    rates = usage_cost.RateTable.load(SCRIPTS / "rates.json")
+    for model_id in ("claude-fable-5-1", "claude-mythos-5-1"):
+        model = rates.lookup(model_id)
+        assert model is not None, model_id
+        assert model.input == Decimal("10.00")
+        assert model.output == Decimal("50.00")
+        assert model.cache_read == Decimal("0.25000")
+        # The write multipliers are the table's own: 1.25x and 2x still apply.
+        assert model.cache_write_5m == Decimal("12.5000")
+        assert model.cache_write_1h == Decimal("20.000")
+
+    # The previous generation keeps the default read multiplier.
+    fable_5 = rates.lookup("claude-fable-5")
+    assert fable_5 is not None
+    assert fable_5.cache_read == Decimal("1.000")
+
+
+def _table(**models) -> dict:
+    return {
+        "rate_table_version": "test",
+        "currency": "USD",
+        "cache_multipliers": {"read": "0.1", "write_5m": "1.25", "write_1h": "2.0"},
+        "models": models,
+    }
+
+
+def test_a_per_model_cache_multiplier_overrides_only_that_tier_for_that_model() -> None:
+    rates = usage_cost.RateTable(
+        _table(
+            **{
+                "model-a": {
+                    "input": "10.00",
+                    "output": "50.00",
+                    "cache_multipliers": {"read": "0.025"},
+                    "speeds": {
+                        "fast": {"input": "20.00", "output": "100.00"},
+                        "slow": {
+                            "input": "10.00",
+                            "output": "50.00",
+                            "cache_multipliers": {"write_1h": "3.0"},
+                        },
+                    },
+                },
+                "model-b": {"input": "10.00", "output": "50.00"},
+            }
+        )
+    )
+    a = rates.lookup("model-a")
+    b = rates.lookup("model-b")
+    assert a is not None and b is not None
+
+    # Only the named tier moves, and only on the model that names it.
+    assert a.cache_read == Decimal("10.00") * Decimal("0.025")
+    assert a.cache_write_5m == Decimal("10.00") * Decimal("1.25")
+    assert a.cache_write_1h == Decimal("10.00") * Decimal("2.0")
+    assert b.cache_read == Decimal("10.00") * Decimal("0.1")
+    assert b.cache_write_5m == Decimal("10.00") * Decimal("1.25")
+
+    # A speed variant inherits the model's override on top of its own rates...
+    fast = rates.lookup("model-a#fast")
+    assert fast is not None
+    assert fast.cache_read == Decimal("20.00") * Decimal("0.025")
+    assert fast.cache_write_1h == Decimal("20.00") * Decimal("2.0")
+    # ...and may layer its own tier on top, without losing the model's.
+    slow = rates.lookup("model-a#slow")
+    assert slow is not None
+    assert slow.cache_read == Decimal("10.00") * Decimal("0.025")
+    assert slow.cache_write_1h == Decimal("10.00") * Decimal("3.0")
+
+
+def test_a_malformed_cache_multiplier_override_is_a_rate_table_error(tmp_path: Path) -> None:
+    """A listed model with a corrupt override is configuration, not a guess.
+
+    Every shape below would otherwise either crash mid-report or silently price
+    the model at the table default — the confident-wrong figure this table
+    refuses to produce.
+    """
+    malformed = (
+        "0.025",                      # not an object
+        ["0.025"],                    # not an object
+        {"read": "abc"},              # not a number
+        {"read": "-0.1"},             # negative
+        {"read": "NaN"},              # not finite
+        {"read": None},               # null
+        {"read": True},               # boolean
+        {"reads": "0.025"},           # not a cache tier
+        {"read": "0.025", "input": "1"},  # a rate, not a tier
+    )
+    for override in malformed:
+        payload = _table(**{"model-a": {"input": "10.00", "output": "50.00",
+                                        "cache_multipliers": override}})
+        with pytest.raises(usage_cost.RateTableError):
+            usage_cost.RateTable(payload)
+        # The same shape on a speed variant is rejected just the same.
+        payload = _table(**{"model-a": {"input": "10.00", "output": "50.00",
+                                        "speeds": {"fast": {"input": "20.00", "output": "100.00",
+                                                            "cache_multipliers": override}}}})
+        with pytest.raises(usage_cost.RateTableError):
+            usage_cost.RateTable(payload)
+
+    # And the documented exit code at the CLI, on a table a reader could ship.
+    broken = tmp_path / "rates.json"
+    broken.write_text(json.dumps(_table(**{"claude-opus-5": {
+        "input": "5.00", "output": "25.00", "cache_multipliers": {"read": "ten percent"}}})))
+    completed = run_cli("--data-root", str(PRICED), "--rates", str(broken))
+    assert completed.returncode == usage_cost.EXIT_ERROR
+    assert "cache_multipliers.read" in completed.stderr
 
 
 def _collect_both_orders(tmp_path: Path, records: list[dict]):

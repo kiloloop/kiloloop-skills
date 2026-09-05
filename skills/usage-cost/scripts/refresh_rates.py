@@ -8,12 +8,16 @@ report does not run it. It reads one provider's model files from the models.dev
 repository at an exact commit, compares them with the table, and either prints
 the differences or writes them back.
 
-It proposes; it does not decide. Two things the catalog cannot express stay
+It proposes; it does not decide. Three things the catalog cannot express stay
 hand-maintained from the published pricing page: the 1-hour cache-write rate
 (the catalog carries a single cache-write price, which is compared against the
-5-minute tier and never written), and models the catalog does not list. Rows
-the catalog lacks are left untouched, and `source_checked` — the date the
-published page was last read by a person — is never moved by this script.
+5-minute tier and never written), models the catalog does not list, and the
+`server_tools` block. The catalog is a per-model index and prices tokens only —
+it carries no per-call rate for a server-side tool such as web search, and its
+`tool_call` field is a capability flag, not a price — so this script neither
+reads nor writes that block. Rows the catalog lacks are left untouched, and
+`source_checked` — the date the published page was last read by a person — is
+never moved by this script.
 
 Exit codes:
     0  the table agrees with the catalog, or --write brought it into agreement

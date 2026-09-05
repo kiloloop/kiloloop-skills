@@ -65,11 +65,49 @@ python scripts/usage_cost.py --since 2026-08-01 --until 2026-08-31
 python scripts/usage_cost.py --format json
 ```
 
+A window edge can be an instant rather than a whole day, for the questions a
+calendar day cannot ask -- usage since a seat switch part-way through the
+afternoon, or usage up to right now:
+
+```bash
+python scripts/usage_cost.py --since 2026-08-11T17:20 --until 2026-08-11T18:00
+```
+
+A datetime `--since` includes the record stamped exactly at it and a datetime
+`--until` excludes it, so two adjacent windows sum to the whole instead of both
+counting the record on the boundary. A datetime written without an offset is
+read in `--tz`; one written with an offset, or a trailing `Z`, is taken as
+written. The two forms mix, and a date-only window behaves exactly as before.
+
+For Codex's local rollouts and the latest recorded account meter:
+
+```bash
+python scripts/usage_cost.py --runtime codex --since 2026-08-10 --until 2026-08-11 --tz UTC
+```
+
+The standard model table shows token counts and `UNPRICED` because the shipped
+table has no OpenAI rates (exit `3`). When the window contains a meter snapshot,
+a separate block looks like this illustrative, perturbed example:
+
+```text
+Codex account rate limit — server snapshot at 2026-08-11T00:02:00Z
+Used: 62.5%    Window: 10,080 minutes (weekly)
+Resets: 2026-08-12T00:00:00+00:00 (UTC)
+This server figure is not derived from the local token total.
+```
+
+Codex uses `~/.codex/sessions` or `$CODEX_HOME/sessions`; `--data-root` can point
+to another sessions directory. Repeated cumulative snapshots count once, and a
+counter decrease starts a new segment. Input includes both cache subsets and
+output includes reasoning, so neither is added twice. The recorded turn model
+labels each increment; `Requests` counts increments, not necessarily user turns.
+The meter is the server's account figure at the named instant, not a live read.
+
 | Flag | Purpose |
 | --- | --- |
 | `--runtime` | Which runtime's records to read. Default `claude-code`. |
 | `--data-root` | Override where those records live. |
-| `--since` / `--until` | Restrict to a day range, `YYYY-MM-DD` inclusive. |
+| `--since` / `--until` | Restrict the window: a day (`YYYY-MM-DD`, the whole day in `--tz`) or an ISO 8601 datetime (an instant; `--since` inclusive, `--until` exclusive). |
 | `--tz` | Zone whose calendar days usage is bucketed into. Default `local`. |
 | `--rates` | Use a different rate table. |
 | `--format` | `table` (default) or `json`. |
@@ -150,11 +188,13 @@ day on either would be over-priced four times over at the default.
 
 ## What it cannot see
 
-- **Only what this machine wrote.** Usage from other machines, other runtimes,
-  the web or desktop apps, or sessions whose transcripts were rotated away is
-  invisible. The figure is a floor, not an account total.
-- **Server-side tools are counted, not costed.** Web search bills per request
-  rather than per token; requests are reported separately.
+- **Only what this machine wrote.** Sessions with no local transcript or
+  rollout, including work on other machines and deleted records, are invisible.
+  Local token counts and Codex's server account meter have different scopes.
+- **Server-side tools are priced per call.** Web search bills per call rather
+  than per token, so it gets its own table row carrying its call count and
+  cost, included in the total; it adds no tokens. A tool the rate table does
+  not rate is counted and marked `UNPRICED`, like an unpriced model.
 - **Rates can be stale.** `scripts/rates.json` is a versioned data file stamped
   by `rate_table_version`. Wrong rates produce a confidently wrong report, and
   the tests cannot catch that — they pin arithmetic, not rates. The refresh
@@ -165,11 +205,9 @@ day on either would be over-priced four times over at the default.
 | Runtime | Status |
 | --- | --- |
 | `claude-code` | Supported — reads local session transcripts. |
-| `codex` | Explicitly unavailable; exits `4` with a stated reason. |
+| `codex` | Local rollout token counts and recorded account meter; exits `4` without a source. OpenAI models remain unpriced. |
 
-Codex is registered as an unavailable adapter rather than omitted, so the
-command can say why rather than implying the runtime does not exist. Adding a
-runtime means one adapter class plus one registry entry — deduplication,
+Adding a runtime means one adapter class plus one registry entry — deduplication,
 pricing, and reporting are all runtime-agnostic.
 
 ## Prior art

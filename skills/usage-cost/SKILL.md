@@ -25,14 +25,35 @@ python scripts/usage_cost.py
 python scripts/usage_cost.py --since 2026-08-01 --until 2026-08-31 --format json
 ```
 
+A window edge can also be an instant, for a question a calendar day cannot ask
+— usage since a seat switch at 17:20, or usage up to right now:
+
+```bash
+python scripts/usage_cost.py --since 2026-08-11T17:20 --until 2026-08-11T18:00
+```
+
 | Flag | Purpose |
 | --- | --- |
 | `--runtime` | Which runtime's records to read. Default `claude-code`. |
 | `--data-root` | Override where those records live. |
-| `--since` / `--until` | Restrict to a day range, `YYYY-MM-DD` inclusive. |
+| `--since` / `--until` | Restrict the window. A day (`YYYY-MM-DD`) covers that whole day in `--tz`; an ISO 8601 datetime is an instant — `--since` inclusive, `--until` exclusive. The two forms mix. |
 | `--tz` | Zone whose calendar days usage is bucketed into. Default `local`; also accepts `UTC` or an IANA name. |
 | `--rates` | Use a different rate table. |
 | `--format` | `table` (default) or `json`. |
+
+**A day edge and an instant edge mean different things, and each keeps its
+own.** `--since 2026-08-11` starts at the first moment of that day in `--tz`;
+`--since 2026-08-11T12:00:00` starts at noon. A datetime `--until` is
+*exclusive*, so `--until T` and `--since T` partition the records between them
+rather than both counting the one stamped exactly at `T` — which is what makes
+two adjacent windows sum to the whole. A datetime written without an offset is
+read in `--tz`; one written with an offset (`2026-08-11T05:00:00-07:00`, or a
+trailing `Z`) is taken as written. When either edge is an instant the header
+reports the window as resolved instants, so a figure can be tied to exactly
+what it covered; a date-only window keeps reporting the days it was given, and
+its output is unchanged. Records with no usable timestamp cannot be placed
+against an instant and stay out of such a window, the same rule a day window
+already applies.
 
 A run with no window leads with an at-a-glance block — today, yesterday, and
 this week, with tokens rounded to B/M/K — above the per-model detail. An
@@ -69,6 +90,8 @@ Exit `3` is a successful run with a caveat, not a failure. Report the total as
 partial and name the unpriced model ids.
 
 ## Data source
+
+### Claude Code
 
 The `claude-code` adapter reads Claude Code's per-session transcripts —
 the `.jsonl` files under `~/.claude/projects` (or `$CLAUDE_CONFIG_DIR/projects`).
@@ -134,14 +157,83 @@ Two properties of the format shape the implementation:
   counted on its own rather than merged with every other identity-less
   record. All of these counts appear in the output.
 
+### Codex
+
+The `codex` adapter reads `rollout-*.jsonl` recursively under
+`~/.codex/sessions` (or `$CODEX_HOME/sessions`). `--data-root` replaces the
+sessions directory. It reads only record type, timestamp, `turn_context` model,
+and `event_msg` payloads whose type is `token_count`; prompts, session metadata,
+and response text are not used or emitted.
+
+For each file, walk `payload.info.total_token_usage` in file order. Subtract
+the previous cumulative snapshot to obtain each positive increment. An equal
+snapshot contributes nothing; a decrease in `total_tokens` starts a new segment
+and its first snapshot contributes in full. Never sum `last_token_usage` (it
+can repeat), and never take only the maximum cumulative total (that loses
+earlier segments). This is the adapter's reconciliation policy, not a guarantee
+that the rollout format is stable. The `Requests` column counts positive
+usage increments, which need not equal user turns or server requests.
+
+Each increment uses the latest preceding `turn_context.model`, or
+`unknown-codex-model` if unavailable. This is the recorded turn model; the
+rollout does not establish that it was the actual serving model. Apply the
+window to the increment's timestamp **after** updating the cumulative baseline,
+so a window starting mid-session counts only its increments.
+
+[OpenAI's prompt-caching guide](https://developers.openai.com/api/docs/guides/prompt-caching)
+defines cache reads and cache writes as subsets of input. Normalize uncached
+input as `input_tokens - cached_input_tokens - cache_write_input_tokens`.
+[Reasoning tokens are included in output](https://developers.openai.com/api/docs/guides/reasoning),
+so retain `output_tokens` without adding `reasoning_output_tokens` again.
+Cache reads map to `cache_read`; unsplit cache writes use the existing
+`cache_write_5m` count slot, with `cache_write_1h` zero. This preserves tokens
+without asserting a five-minute lifetime: Codex records no cache lifetime,
+and the shipped table has no OpenAI rates. Codex rows therefore remain
+`UNPRICED` and a run containing them exits `3`.
+
+Input, output, and total counters are required; absent cache/reasoning fields
+contribute zero. Present counters must be non-negative integers, subsets must
+fit their totals, and input plus output must equal total. Inconsistent snapshots
+or deltas are skipped and counted, retaining the last valid baseline. Like the
+Claude adapter, JSON decode failures and non-object lines increment
+`malformed_lines`; blank lines are ignored. Unreadable files are counted, and
+an absent, empty, or wholly unreadable rollout source exits `4`.
+
+The separate rate-limit block carries the latest valid `rate_limits.primary`
+snapshot **inside the selected window**, including records with repeated usage
+or `info: null`. It names the source record's timestamp, reports the server's
+`used_percent` and `window_minutes` (10,080 means weekly), and renders
+`resets_at` in `--tz`. JSON includes the raw epoch and `resets_at_local` under
+`rate_limits.primary`. Without an in-window snapshot the block/key is absent.
+This is an account meter observed at that instant, not a live query or a value
+derived from local token totals.
+
+Meter diagnostics cover the selected local-day window: `invalid_rate_limits`
+counts malformed meter data, while `unstamped_rate_limits` counts otherwise
+valid meters whose source timestamp is missing or cannot be parsed as an
+instant. Such meters cannot be ordered and are excluded from the displayed
+snapshot without dropping valid usage on the same record. A usable date prefix
+can still place an unparseable timestamp in a window; without a usable day,
+the meter is considered only when no window is requested. An *instant* window
+is stricter, and deliberately so: a record with no parseable instant cannot be
+placed against one at all, so its usage and its meter fall outside the window
+together and the record is counted in `filtered_out` rather than reaching
+`unstamped_rate_limits`. These counters do not change the scope of
+file-reading or token-reconciliation diagnostics.
+
 ### What the source does not cover
 
-- **Only what was written locally.** Usage from other machines, other runtimes,
-  the web or desktop apps, or sessions whose transcripts were deleted or rotated
-  away is invisible. The figure is a floor for the account, not a total.
-- **Server-side tool calls are counted, not costed.** Web search bills per
-  request rather than per token. Requests are reported separately; the cost
-  total covers tokens only.
+- **Only what was written locally.** Sessions that never wrote a transcript or
+  rollout here, including work on other machines and deleted records, are
+  invisible. Token totals cover the selected runtime's local files; the Codex
+  server meter is a separate account snapshot.
+- **Server-side tool calls are priced per call when the table rates them.**
+  Web search bills per call rather than per token, so it cannot ride a
+  per-million-token model row: it gets its own row in the table, carrying its
+  call count and cost, and that cost is inside the total. It contributes no
+  tokens, so the token total is unaffected. A tool with recorded calls that
+  the table does not rate behaves exactly like an unpriced model — counted,
+  marked `UNPRICED`, excluded from the cost total, and the run exits `3`.
 - **Every request is priced at the synchronous list rate.** The published
   pricing also defines
   [batch processing](https://platform.claude.com/docs/en/about-claude/pricing#batch-processing)
@@ -151,9 +243,9 @@ Two properties of the format shape the implementation:
 - **Records with no timestamp are dropped from a windowed run.** They are
   included only when no `--since` / `--until` is given, so a windowed total
   never quietly absorbs usage from outside the window.
-- **Absent fields count as zero; present ones must be valid.** A record
-  missing a usage field is not an error; the missing component contributes
-  nothing. A field that is present but not a non-negative integer makes the
+- **Optional absent fields count as zero; present ones must be valid.** Claude
+  usage components and Codex cache/reasoning components may be absent. Codex
+  input/output/total counters are required. A present non-integer field makes the
   record invalid — mapping it to zero would make corruption indistinguishable
   from absence. Lines that do not parse, and files that cannot be read, are
   skipped and their counts reported.
@@ -199,6 +291,19 @@ total is marked incomplete, and the command exits `3`.
 Model ids listed under `non_billable_models` — locally generated messages that
 were never sent to the API — are counted separately and excluded from the cost
 total.
+
+**Server-side tools are priced per call, in their own block.** `server_tools`
+is keyed by tool name; each entry names its `unit` (only `per_request` is
+supported, stated rather than assumed so a future per-hour tool cannot be read
+as per-call), its `rate` as a decimal string, and a `display_name`. Web search
+is published as $10 per 1,000 searches, stored as `"0.01"` per call, with the
+block carrying its own `source` and `source_checked` because it is verified
+against the pricing page independently of the model rows. A malformed entry is
+a rate-table error (exit `2`), for the same reason a malformed model row is: a
+tool listed with a corrupt rate must never read as merely unpriced, which is
+the one reading that silently understates a cost. The block is hand-maintained
+— the models.dev catalog prices tokens per model only and carries no per-call
+tool rate, so `refresh_rates.py` neither reads nor writes it.
 
 **The two totals have different scopes, and the report says so.** The token
 total counts every record observed; the cost total covers only priced, billable
@@ -262,7 +367,7 @@ moved by the script.
 | Runtime | Status |
 | --- | --- |
 | `claude-code` | Supported — reads local session transcripts. |
-| `codex` | Explicitly unavailable — no established local usage source, so its usage cannot be measured from this machine. Exits `4`. |
+| `codex` | Supported — reads local rollouts and their server meter snapshots; token rows are unpriced with the shipped rates. Exits `4` when no rollout source is available. |
 
 An unsupported runtime returns a stated unavailable reason and a distinct exit
 code. It never returns an estimate. A runtime with no readable records is a

@@ -2,9 +2,11 @@
 
 The central claim is exact and hand-checkable: the synthetic transcript in
 `data/priced/` contains a known set of token counts, and at the rates pinned in
-`scripts/rates.json` those tokens come to exactly $2.1040. Every figure asserted
-below is derived by hand in `EXPECTED_COST_DERIVATION` so a reviewer can check
-the arithmetic without running anything.
+`scripts/rates.json` those tokens come to exactly $2.1040. The same transcript
+records two server-side web searches, priced per call rather than per token, so
+the run's total is $2.1240. Every figure asserted below is derived by hand in
+`EXPECTED_COST_DERIVATION` and `EXPECTED_WEB_SEARCH_COST` so a reviewer can
+check the arithmetic without running anything.
 """
 
 from __future__ import annotations
@@ -60,6 +62,14 @@ EXPECTED_COST_DERIVATION = Decimal("2.1040")
 EXPECTED_SONNET_COST = Decimal("0.1290")
 EXPECTED_FABLE_5_1_COST = Decimal("0.8200")
 
+# Server tools bill per call. rates.json prices web search at $0.01 per call,
+# published as $10 per 1,000 searches; the transcript records two, both on
+# 2026-08-12:
+#              web search  2 calls x 0.01                            = 0.0200
+#                                                        run total   = 2.1240
+EXPECTED_WEB_SEARCH_COST = Decimal("0.0200")
+EXPECTED_TOTAL_COST = EXPECTED_COST_DERIVATION + EXPECTED_WEB_SEARCH_COST
+
 EXPECTED_PRICED_TOKENS = 503_000 + 142_500 + 18_000 + 2_000 + 451_200  # 1,116,700
 
 
@@ -87,8 +97,10 @@ def test_known_usage_prices_to_an_exact_figure() -> None:
     assert completed.returncode == 0, completed.stderr
     assert payload["complete"] is True
     assert payload["unpriced_models"] == []
-    assert Decimal(payload["totals"]["cost"]) == EXPECTED_COST_DERIVATION
+    assert Decimal(payload["totals"]["cost"]) == EXPECTED_TOTAL_COST
     assert payload["totals"]["tokens"] == EXPECTED_PRICED_TOKENS
+    # `requests` stays the model-request count; server-tool calls are counted
+    # under their own key so the two units are never summed by accident.
     assert payload["totals"]["requests"] == 5
 
     by_id = {model["model_id"]: model for model in payload["models"]}
@@ -114,7 +126,7 @@ def test_repeated_transcript_records_are_counted_once() -> None:
     assert payload["totals"]["requests"] == 5
     # Summing every line instead would inflate the cost well past the true
     # figure: one extra copy of the triple-recorded request already exceeds this.
-    assert Decimal(payload["totals"]["cost"]) < EXPECTED_COST_DERIVATION + Decimal("0.9550")
+    assert Decimal(payload["totals"]["cost"]) < EXPECTED_TOTAL_COST + Decimal("0.9550")
 
 
 def test_malformed_lines_are_skipped_without_failing_the_run() -> None:
@@ -125,17 +137,27 @@ def test_malformed_lines_are_skipped_without_failing_the_run() -> None:
     assert payload["collection"]["files_scanned"] == 1
 
 
-def test_server_tool_requests_are_reported_but_not_costed() -> None:
+def test_server_tool_calls_are_priced_per_call_inside_the_total() -> None:
     payload, completed = run_json("--data-root", str(PRICED))
 
     assert completed.returncode == 0, completed.stderr
     assert payload["totals"]["web_search_requests"] == 2
-    # The token total alone still reconciles to the hand-derived figure, so the
-    # two web searches contributed nothing to the cost.
-    assert Decimal(payload["totals"]["cost"]) == EXPECTED_COST_DERIVATION
+    assert payload["totals"]["server_tool_requests"] == 2
+    assert Decimal(payload["totals"]["server_tool_cost"]) == EXPECTED_WEB_SEARCH_COST
+    # The run total is the token cost plus the per-call cost, and the token
+    # total is untouched by the calls: a server tool adds money, not tokens.
+    assert Decimal(payload["totals"]["cost"]) == EXPECTED_TOTAL_COST
+    assert payload["totals"]["tokens"] == EXPECTED_PRICED_TOKENS
+
+    (search,) = payload["server_tools"]
+    assert search["tool"] == "web_search"
+    assert search["priced"] is True
+    assert search["requests"] == 2
+    assert Decimal(search["cost"]) == EXPECTED_WEB_SEARCH_COST
 
     table = run_cli("--data-root", str(PRICED))
-    assert "billed per request rather than per token" in table.stdout
+    assert "Web search" in table.stdout
+    assert "billed per call rather than per token" in table.stdout
 
 
 def test_window_filter_excludes_earlier_days() -> None:
@@ -143,7 +165,7 @@ def test_window_filter_excludes_earlier_days() -> None:
 
     assert completed.returncode == 0, completed.stderr
     # Dropping the 2026-08-10 request removes exactly its 0.9550 contribution.
-    assert Decimal(payload["totals"]["cost"]) == EXPECTED_COST_DERIVATION - Decimal("0.9550")
+    assert Decimal(payload["totals"]["cost"]) == EXPECTED_TOTAL_COST - Decimal("0.9550")
     assert payload["totals"]["requests"] == 4
     # One *request* is excluded, not its three raw copies: reconciliation now
     # runs before the window, so the counter reports requests throughout.
@@ -279,11 +301,14 @@ def test_summary_periods_sum_the_days_they_claim() -> None:
         )
     }
     assert rows["today"].cost == (
-        Decimal("0.1400") + Decimal("0.0600") + EXPECTED_FABLE_5_1_COST
+        Decimal("0.1400")
+        + Decimal("0.0600")
+        + EXPECTED_FABLE_5_1_COST
+        + EXPECTED_WEB_SEARCH_COST
     )
     assert rows["yesterday"].cost == EXPECTED_SONNET_COST
     assert rows["this_week"].since == "2026-08-10"
-    assert rows["this_week"].cost == EXPECTED_COST_DERIVATION
+    assert rows["this_week"].cost == EXPECTED_TOTAL_COST
     assert rows["this_week"].tokens == EXPECTED_PRICED_TOKENS
 
 
@@ -1007,13 +1032,13 @@ def test_local_fallback_matches_iana_rules_across_transitions(monkeypatch) -> No
         time.tzset()
 
 
-def test_unsupported_runtime_reports_an_explicit_unavailable_state() -> None:
-    completed = run_cli("--runtime", "codex")
+def test_codex_without_rollouts_reports_an_explicit_unavailable_state(tmp_path: Path) -> None:
+    completed = run_cli("--runtime", "codex", "--data-root", str(tmp_path))
 
     assert completed.returncode == usage_cost.EXIT_RUNTIME_UNAVAILABLE
     assert completed.stdout == ""
     assert "unavailable for runtime 'codex'" in completed.stderr
-    assert "no local usage source is established" in completed.stderr
+    assert "no rollout-*.jsonl session records" in completed.stderr
 
 
 def test_missing_data_root_reports_an_actionable_unavailable_state(tmp_path: Path) -> None:
@@ -1168,3 +1193,395 @@ def test_adapter_registry_exposes_the_supported_runtime() -> None:
     assert runtime_adapters.CLAUDE_CODE in runtime_adapters.available_runtimes()
     adapter = runtime_adapters.get_adapter(runtime_adapters.CLAUDE_CODE)
     assert adapter.availability(PRICED).supported is True
+
+
+# --- window edges: days and instants -------------------------------------
+#
+# One transcript, seven requests, straddling both a day boundary and a
+# mid-day instant. Each request carries a distinct power-of-two output-token
+# count, so the token total of any run names exactly which requests survived
+# the window rather than merely how many:
+#
+#   A  1  2026-08-10T23:59:59Z    one second before the 08-11 day edge
+#   B  2  2026-08-11T00:00:00Z    the first instant of 08-11
+#   C  4  2026-08-11T11:59:59Z    one second before the 12:00 instant edge
+#   D  8  2026-08-11T12:00:00Z    exactly the 12:00 instant edge
+#   E 16  2026-08-11T12:00:01Z    one second after it
+#   F 32  2026-08-11T23:59:59Z    the last second of 08-11
+#   G 64  2026-08-12T00:00:00Z    the first instant of 08-12
+EDGE_RECORDS = (
+    ("a", "2026-08-10T23:59:59.000Z", 1),
+    ("b", "2026-08-11T00:00:00.000Z", 2),
+    ("c", "2026-08-11T11:59:59.000Z", 4),
+    ("d", "2026-08-11T12:00:00.000Z", 8),
+    ("e", "2026-08-11T12:00:01.000Z", 16),
+    ("f", "2026-08-11T23:59:59.000Z", 32),
+    ("g", "2026-08-12T00:00:00.000Z", 64),
+)
+ALL_EDGE_TOKENS = 127  # 1+2+4+8+16+32+64
+
+
+@pytest.fixture
+def edge_root(tmp_path: Path) -> Path:
+    """A transcript whose requests sit one second either side of each edge."""
+    lines = []
+    for name, timestamp, output_tokens in EDGE_RECORDS:
+        lines.append(
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "sessionId": "session-edge",
+                    "uuid": f"u-{name}",
+                    "requestId": f"req_{name}",
+                    "timestamp": timestamp,
+                    "message": {
+                        "id": f"msg_{name}",
+                        "role": "assistant",
+                        "model": "claude-sonnet-5",
+                        "usage": {"input_tokens": 0, "output_tokens": output_tokens},
+                    },
+                }
+            )
+        )
+    root = tmp_path / "edges"
+    root.mkdir()
+    (root / "session-edge.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return root
+
+
+def _edge_tokens(root: Path, *window: str) -> int:
+    payload, completed = run_json("--data-root", str(root), *window)
+    assert completed.returncode == 0, completed.stderr
+    return payload["totals"]["tokens"]
+
+
+@pytest.mark.parametrize(
+    ("window", "expected", "why"),
+    [
+        ((), ALL_EDGE_TOKENS, "no window keeps every request"),
+        # A date edge is a whole calendar day in --tz, exactly as before
+        # instants existed: --since keeps 08-11 onward, --until keeps
+        # everything through the end of 08-11.
+        (("--since", "2026-08-11"), 2 + 4 + 8 + 16 + 32 + 64, "date since: drops A"),
+        (("--until", "2026-08-11"), 1 + 2 + 4 + 8 + 16 + 32, "date until: drops G"),
+        # A datetime edge is an instant: --since includes the record stamped
+        # exactly at it, --until excludes it.
+        (
+            ("--since", "2026-08-11T12:00:00Z"),
+            8 + 16 + 32 + 64,
+            "datetime since is inclusive: D survives",
+        ),
+        (
+            ("--until", "2026-08-11T12:00:00Z"),
+            1 + 2 + 4,
+            "datetime until is exclusive: D is dropped",
+        ),
+    ],
+)
+def test_each_window_edge_form_applies_its_own_rule(
+    edge_root: Path, window: tuple[str, ...], expected: int, why: str
+) -> None:
+    assert _edge_tokens(edge_root, *window) == expected, why
+
+
+def test_adjacent_instant_windows_partition_the_boundary_record(edge_root: Path) -> None:
+    """The half-open rule is what makes two windows tile instead of overlap."""
+    edge = "2026-08-11T12:00:00Z"
+    before = _edge_tokens(edge_root, "--until", edge)
+    after = _edge_tokens(edge_root, "--since", edge)
+
+    assert before + after == ALL_EDGE_TOKENS
+    # D (8) is counted once, on the later side, rather than in both or neither.
+    assert before == 1 + 2 + 4
+    assert after == 8 + 16 + 32 + 64
+
+
+def test_mixed_date_and_datetime_window_applies_both_rules(edge_root: Path) -> None:
+    """Each edge keeps its own meaning when the two forms are combined."""
+    # From the start of 08-11 (day) up to but not including noon (instant).
+    assert _edge_tokens(
+        edge_root, "--since", "2026-08-11", "--until", "2026-08-11T12:00:00Z"
+    ) == 2 + 4
+    # From noon (instant) through the end of 08-11 (day).
+    assert _edge_tokens(
+        edge_root, "--since", "2026-08-11T12:00:00Z", "--until", "2026-08-11"
+    ) == 8 + 16 + 32
+
+
+def test_naive_datetime_edge_is_read_in_the_report_zone(edge_root: Path) -> None:
+    """A datetime without an offset means the reader's clock, which --tz names."""
+    assert _edge_tokens(edge_root, "--since", "2026-08-11T12:00:00", "--tz", "UTC") == (
+        8 + 16 + 32 + 64
+    )
+    # Noon in Los Angeles on 2026-08-11 is 19:00Z, so only F and G survive.
+    assert _edge_tokens(
+        edge_root, "--since", "2026-08-11T12:00:00", "--tz", "America/Los_Angeles"
+    ) == 32 + 64
+
+
+def test_offset_bearing_datetime_edge_is_taken_as_written(edge_root: Path) -> None:
+    """An explicit offset is honoured, not reinterpreted in --tz."""
+    # 05:00-07:00 is 12:00Z, so this selects the same requests in any zone.
+    for zone in ("UTC", "Asia/Tokyo", "America/Los_Angeles"):
+        assert _edge_tokens(
+            edge_root, "--since", "2026-08-11T05:00:00-07:00", "--tz", zone
+        ) == 8 + 16 + 32 + 64
+
+
+def test_instant_window_is_reported_as_instants(edge_root: Path) -> None:
+    table = run_cli(
+        "--data-root", str(edge_root),
+        "--since", "2026-08-11T12:00:00Z", "--until", "2026-08-11T18:00:00Z",
+    )
+    assert table.returncode == 0, table.stderr
+    header = table.stdout.splitlines()[0]
+    assert "2026-08-11T12:00:00+00:00 to 2026-08-11T18:00:00+00:00 (exclusive)" in header
+
+    payload, completed = run_json(
+        "--data-root", str(edge_root),
+        "--since", "2026-08-11T12:00:00Z", "--until", "2026-08-11T18:00:00Z",
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert payload["window"]["resolved"] == {
+        "since": "2026-08-11T12:00:00+00:00",
+        "until": "2026-08-11T18:00:00+00:00",
+        "until_exclusive": True,
+    }
+
+
+def test_date_only_window_still_reports_days_and_adds_no_json_key(
+    edge_root: Path,
+) -> None:
+    """The date path is unchanged, down to the header text and the payload keys."""
+    table = run_cli(
+        "--data-root", str(edge_root), "--since", "2026-08-11", "--until", "2026-08-11"
+    )
+    assert table.returncode == 0, table.stderr
+    assert "Window: 2026-08-11 to 2026-08-11" in table.stdout.splitlines()[0]
+
+    payload, _ = run_json("--data-root", str(edge_root), "--since", "2026-08-11")
+    assert payload["window"] == {"since": "2026-08-11", "until": None}
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "2026-08-11T25:00:00Z",
+        "2026-13-01T00:00:00Z",
+        "2026-08-11T12:00:00+99:00",
+        "not-a-time",
+    ],
+)
+def test_unusable_window_edges_are_refused(edge_root: Path, bad: str) -> None:
+    completed = run_cli("--data-root", str(edge_root), "--since", bad)
+    assert completed.returncode != 0
+    assert "--since" in completed.stderr
+
+
+def test_reversed_window_is_refused_across_edge_forms(edge_root: Path) -> None:
+    completed = run_cli(
+        "--data-root", str(edge_root),
+        "--since", "2026-08-11T18:00:00Z", "--until", "2026-08-11T12:00:00Z",
+    )
+    assert completed.returncode == usage_cost.EXIT_ERROR
+    assert "is after" in completed.stderr
+
+    # A date --until covers the whole day, so it is not "before" an instant
+    # earlier that same day: the ordering check compares resolved instants
+    # rather than the text.
+    ok = run_cli(
+        "--data-root", str(edge_root),
+        "--since", "2026-08-11T12:00:00Z", "--until", "2026-08-11",
+    )
+    assert ok.returncode == 0, ok.stderr
+
+
+def test_maximum_date_upper_edge_resolves_without_overflowing(
+    edge_root: Path,
+) -> None:
+    """The last representable day has no next midnight to resolve to.
+
+    The ordering check turns each edge into a single instant, and a date
+    ``--until`` becomes the following midnight -- which does not exist for
+    ``date.max``. The parser accepts the date, so it has to resolve rather
+    than raise ``OverflowError`` out of the CLI.
+    """
+    # Every record is long before 9999, so the edge selects the whole fixture
+    # rather than merely failing to crash.
+    assert _edge_tokens(edge_root, "--until", "9999-12-31") == ALL_EDGE_TOKENS
+    # It still combines with a lower edge, keeping that edge's own rule.
+    assert _edge_tokens(
+        edge_root, "--since", "2026-08-11", "--until", "9999-12-31"
+    ) == 2 + 4 + 8 + 16 + 32 + 64
+    # A maximum-date lower edge is an ordinary empty window, not an error.
+    assert _edge_tokens(edge_root, "--since", "9999-12-31") == 0
+
+    # The resolved edge still orders against other edges rather than being
+    # treated as unbounded.
+    reversed_window = run_cli(
+        "--data-root", str(edge_root),
+        "--since", "9999-12-31", "--until", "9999-12-30",
+    )
+    assert reversed_window.returncode == usage_cost.EXIT_ERROR
+    assert "is after" in reversed_window.stderr
+
+
+def test_records_without_a_timestamp_stay_out_of_an_instant_window(
+    tmp_path: Path,
+) -> None:
+    """An instant edge cannot place a stampless record, so it is not counted."""
+    root = tmp_path / "stampless"
+    root.mkdir()
+    (root / "s.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "assistant",
+                "sessionId": "s",
+                "uuid": "u-1",
+                "requestId": "req_1",
+                "message": {
+                    "id": "msg_1",
+                    "role": "assistant",
+                    "model": "claude-sonnet-5",
+                    "usage": {"input_tokens": 0, "output_tokens": 500},
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    unwindowed, _ = run_json("--data-root", str(root))
+    assert unwindowed["totals"]["tokens"] == 500
+
+    windowed, completed = run_json(
+        "--data-root", str(root), "--since", "2026-08-11T12:00:00Z"
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert windowed["totals"]["tokens"] == 0
+
+
+# --- server tools: priced per call, or counted and marked ----------------
+# Sentinel for "drop the block entirely", which is a different case from
+# "the block is present but wrong".
+_OMIT = object()
+
+
+def _rates_with_server_tools(tmp_path: Path, block: object) -> Path:
+    payload = json.loads((SCRIPTS / "rates.json").read_text(encoding="utf-8"))
+    if block is _OMIT:
+        payload.pop("server_tools", None)
+    else:
+        payload["server_tools"] = block
+    path = tmp_path / "rates.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def test_unrated_server_tool_is_counted_marked_and_left_out_of_the_total(
+    tmp_path: Path,
+) -> None:
+    """A tool with no rate row behaves exactly like an unpriced model."""
+    rates = _rates_with_server_tools(tmp_path, _OMIT)
+    payload, completed = run_json("--data-root", str(PRICED), "--rates", str(rates))
+
+    assert completed.returncode == usage_cost.EXIT_INCOMPLETE
+    assert payload["complete"] is False
+    assert payload["unpriced_server_tools"] == ["web_search"]
+    (search,) = payload["server_tools"]
+    assert search["priced"] is False
+    assert search["cost"] is None
+    assert search["requests"] == 2
+    # Counted, but excluded from the cost: the total is the token cost alone.
+    assert Decimal(payload["totals"]["cost"]) == EXPECTED_COST_DERIVATION
+
+    table = run_cli("--data-root", str(PRICED), "--rates", str(rates))
+    assert "UNPRICED" in table.stdout
+    assert "no per-call rate is published" in table.stdout
+
+
+@pytest.mark.parametrize(
+    ("block", "why"),
+    [
+        ("not-an-object", "the block itself must be an object"),
+        ({"web_search": "not-an-object"}, "an entry must be an object"),
+        ({"web_search": {"unit": "per_hour", "rate": "0.01"}}, "unknown unit"),
+        ({"web_search": {"rate": "0.01"}}, "missing unit"),
+        ({"web_search": {"unit": "per_request"}}, "missing rate"),
+        ({"web_search": {"unit": "per_request", "rate": "-1"}}, "negative rate"),
+        ({"web_search": {"unit": "per_request", "rate": "free"}}, "non-numeric rate"),
+        (
+            {"web_search": {"unit": "per_request", "rate": "0.01", "display_name": ""}},
+            "empty display name",
+        ),
+    ],
+)
+def test_malformed_server_tool_entry_is_a_rate_table_error(
+    tmp_path: Path, block: object, why: str
+) -> None:
+    """Exit 2, consistent with a malformed model row -- never a silent zero."""
+    rates = _rates_with_server_tools(tmp_path, block)
+    completed = run_cli("--data-root", str(PRICED), "--rates", str(rates))
+
+    assert completed.returncode == usage_cost.EXIT_ERROR, why
+    assert "server_tools" in completed.stderr
+    assert completed.stdout == ""
+
+
+def test_unstampable_meter_is_out_of_an_instant_window(tmp_path: Path) -> None:
+    """The instant rule reaches the meter too, and the record is still accounted.
+
+    A meter whose record carries no parseable instant is counted under
+    `unstamped_rate_limits` when it is in scope. An instant window cannot place
+    that record at all, so the record -- its usage and its meter together --
+    falls outside the window and is counted in `filtered_out` rather than
+    disappearing. Lives here rather than beside the other meter tests because
+    what it pins is the window rule, not the meter.
+    """
+    root = tmp_path / "codex-unstamped"
+    root.mkdir()
+    meter = {"primary": {"used_percent": 50, "window_minutes": 10080, "resets_at": 1786492800}}
+    usage = {
+        "input_tokens": 100, "cached_input_tokens": 0, "cache_write_input_tokens": 0,
+        "output_tokens": 20, "reasoning_output_tokens": 0, "total_tokens": 120,
+    }
+    (root / "rollout-unstamped.jsonl").write_text(
+        json.dumps(
+            {
+                "timestamp": "2026-08-11 not-an-instant",
+                "type": "event_msg",
+                "payload": {
+                    "type": "token_count",
+                    "info": {"total_token_usage": usage},
+                    "rate_limits": meter,
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    def collection(expected_exit: int, *window: str) -> dict:
+        payload, completed = run_json(
+            "--runtime", "codex", "--data-root", str(root), *window
+        )
+        assert completed.returncode == expected_exit, completed.stderr
+        return payload["collection"]
+
+    # In scope with no window, and with a day window: the leading date is usable
+    # even though the timestamp is not a full instant. The record is counted, and
+    # no OpenAI rate ships, so these runs are incomplete.
+    for window in ((), ("--since", "2026-08-11", "--until", "2026-08-11")):
+        counts = collection(usage_cost.EXIT_INCOMPLETE, *window)
+        assert counts["unstamped_rate_limits"] == 1
+        assert counts["invalid_rate_limits"] == 0
+        assert counts["filtered_out"] == 0
+
+    # Under an instant window the record cannot be placed, so it is filtered out
+    # whole -- and counted as filtered rather than silently dropped. With no
+    # record left there is no unpriced row either, so this run exits 0: an empty
+    # window is a real zero, not an incomplete report.
+    counts = collection(
+        usage_cost.EXIT_OK, "--since", "2026-08-11T00:00:00Z", "--until", "2026-08-12T00:00:00Z"
+    )
+    assert counts["unstamped_rate_limits"] == 0
+    assert counts["filtered_out"] == 1

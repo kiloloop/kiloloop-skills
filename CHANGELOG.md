@@ -8,6 +8,18 @@ A release is a snapshot of the whole collection. Skills are distributed
 together but installed independently, so the exact tool versions each release
 pins are also recorded in [Pinned tool versions](#pinned-tool-versions).
 
+## [0.4.2] - 2026-09-05
+
+### Added
+
+- Read Codex rollout token usage with duplicate suppression and counter-reset handling in [usage-cost](skills/usage-cost/SKILL.md).
+- Show Codex's latest recorded account-limit meter with window-scoped data and timestamp diagnostics in [usage-cost](skills/usage-cost/SKILL.md).
+- Price server-side tool calls per call from a `server_tools` block in the rate table, starting with web search, in [usage-cost](skills/usage-cost/SKILL.md).
+
+### Changed
+
+- Accept an ISO 8601 datetime on `--since` / `--until` so a window can start or end mid-day in [usage-cost](skills/usage-cost/SKILL.md).
+
 ## [0.4.1] - 2026-09-02
 
 ### Added
@@ -128,12 +140,14 @@ reading every entry above.
 
 | Release | Skill | Pinned distribution |
 | --- | --- | --- |
+| 0.4.2 | `memory-lint` | `memory-lint==0.1.0` |
 | 0.4.1 | `memory-lint` | `memory-lint==0.1.0` |
 | 0.4.0 | `memory-lint` | `memory-lint==0.1.0` |
 | 0.3.0 | `memory-lint` | `memory-lint==0.1.0` |
 | 0.2.0 | `memory-lint` | `memory-lint==0.1.0` |
 | 0.1.0 | `memory-lint` | `memory-lint==0.1.0` |
 
+[0.4.2]: https://github.com/kiloloop/kiloloop-skills/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/kiloloop/kiloloop-skills/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/kiloloop/kiloloop-skills/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/kiloloop/kiloloop-skills/compare/v0.2.0...v0.3.0

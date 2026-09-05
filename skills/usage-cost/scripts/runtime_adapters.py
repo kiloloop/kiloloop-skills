@@ -14,9 +14,10 @@ command can say why rather than implying the runtime does not exist.
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone, tzinfo
 from pathlib import Path
@@ -24,6 +25,7 @@ from typing import Protocol
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 CLAUDE_CODE = "claude-code"
+CODEX = "codex"
 
 
 class UnknownTimezone(Exception):
@@ -195,12 +197,48 @@ class CollectionResult:
     partial_cache_splits: int = 0
     cache_split_conflicts: int = 0
     conflicting_records: int = 0
+    counter_resets: int = 0
+    invalid_rate_limits: int = 0
+    unstamped_rate_limits: int = 0
+    rate_limits: RateLimitSnapshot | None = None
+
+
+@dataclass(frozen=True)
+class RateLimitSnapshot:
+    """A server-reported account meter, independent of local usage totals."""
+
+    timestamp: str
+    used_percent: int | float
+    window_minutes: int
+    resets_at: int
+    resets_at_local: str
 
 
 @dataclass(frozen=True)
 class Availability:
     supported: bool
     reason: str = ""
+
+
+@dataclass(frozen=True)
+class Bound:
+    """One resolved edge of the reporting window.
+
+    An edge is given either as a calendar day or as an instant, and the two
+    are filtered by different means: a day is compared against the record's
+    bucketed day, so it keeps following the report zone's calendar, while an
+    instant is compared against the record's own timestamp. Both forms are
+    carried rather than collapsing the day form into an instant, so a
+    date-only window keeps behaving exactly as it always has -- the day
+    comparison is the same string comparison it was before instants existed.
+
+    `text` is what the caller typed, kept verbatim for the header line.
+    Exactly one of `day` and `instant` is set.
+    """
+
+    text: str
+    day: str | None = None
+    instant: datetime | None = None
 
 
 class RuntimeAdapter(Protocol):
@@ -213,8 +251,8 @@ class RuntimeAdapter(Protocol):
     def collect(
         self,
         data_root: Path | None,
-        since: str | None,
-        until: str | None,
+        since: Bound | None,
+        until: Bound | None,
         zone: tzinfo | SystemLocal,
     ) -> CollectionResult: ...
 
@@ -239,8 +277,8 @@ class UnavailableAdapter:
     def collect(
         self,
         data_root: Path | None,
-        since: str | None,
-        until: str | None,
+        since: Bound | None,
+        until: Bound | None,
         zone: tzinfo | SystemLocal,
     ) -> CollectionResult:
         raise RuntimeUnavailable(self.name, self._reason)
@@ -465,8 +503,8 @@ class ClaudeCodeAdapter:
     def collect(
         self,
         data_root: Path | None,
-        since: str | None,
-        until: str | None,
+        since: Bound | None,
+        until: Bound | None,
         zone: tzinfo | SystemLocal,
     ) -> CollectionResult:
         available = self.availability(data_root)
@@ -543,7 +581,7 @@ class ClaudeCodeAdapter:
                 result.conflicting_records += 1
                 continue
             canonical = replace(record, day=earliest_day.get(key, record.day))
-            if not _within(canonical.day, since, until):
+            if not _within(canonical.day, canonical.timestamp, since, until):
                 result.filtered_out += 1
                 continue
             result.records.append(canonical)
@@ -676,24 +714,242 @@ class ClaudeCodeAdapter:
         )
 
 
-def _within(day: str | None, since: str | None, until: str | None) -> bool:
-    if day is None:
-        # A record with no usable timestamp cannot be placed in a window. It is
-        # kept only when no window was requested, so a windowed total never
-        # silently includes usage from outside the window.
-        return since is None and until is None
-    if since is not None and day < since:
-        return False
-    return until is None or day <= until
+class CodexAdapter:
+    """Read cumulative usage in file order, then select deltas by timestamp.
+
+    A repeated cumulative snapshot contributes nothing. A decrease in the
+    total counter starts a new segment whose first snapshot counts in full.
+    `last_token_usage` is never summed: it can be re-emitted without new work.
+    """
+
+    name = CODEX
+    _COUNTERS = (
+        "input_tokens", "cached_input_tokens", "cache_write_input_tokens",
+        "output_tokens", "reasoning_output_tokens", "total_tokens",
+    )
+
+    def resolve_data_root(self, data_root: Path | None) -> Path:
+        if data_root is not None:
+            return data_root
+        configured = os.environ.get("CODEX_HOME")
+        base = Path(configured).expanduser() if configured else Path.home() / ".codex"
+        return base / "sessions"
+
+    def availability(self, data_root: Path | None) -> Availability:
+        root = self.resolve_data_root(data_root)
+        if not root.is_dir():
+            return Availability(False, f"no Codex rollout directory at {root}. "
+                                "Point --data-root at a sessions directory, or set CODEX_HOME.")
+        if not any(path.is_file() for path in root.rglob("rollout-*.jsonl")):
+            return Availability(False, f"no rollout-*.jsonl session records under {root}. "
+                                "Point --data-root at a Codex sessions directory; "
+                                "a missing source is not zero usage.")
+        return Availability(True)
+
+    def collect(
+        self, data_root: Path | None, since: Bound | None, until: Bound | None,
+        zone: tzinfo | SystemLocal,
+    ) -> CollectionResult:
+        available = self.availability(data_root)
+        if not available.supported:
+            raise RuntimeUnavailable(self.name, available.reason)
+        root = self.resolve_data_root(data_root)
+        result = CollectionResult()
+        for path in sorted(root.rglob("rollout-*.jsonl")):
+            if not path.is_file():
+                continue
+            result.files_scanned += 1
+            try:
+                # Stream only this file; real rollouts can contain long prompts.
+                with path.open(encoding="utf-8", errors="replace") as lines:
+                    self._collect_lines(lines, path, result, since, until, zone)
+            except OSError:
+                result.unreadable_files += 1
+        if result.files_scanned and result.unreadable_files == result.files_scanned:
+            raise RuntimeUnavailable(self.name, f"all {result.files_scanned} rollout file(s) "
+                                     f"under {root} were unreadable; no usage could be measured.")
+        return result
+
+    def _collect_lines(
+        self, lines: Iterable[str], path: Path, result: CollectionResult,
+        since: Bound | None, until: Bound | None, zone: tzinfo | SystemLocal,
+    ) -> None:
+        previous = None
+        model = "unknown-codex-model"
+        for line_number, line in enumerate(lines, 1):
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                result.malformed_lines += 1
+                continue
+            if not isinstance(entry, dict):
+                result.malformed_lines += 1
+                continue
+            payload = entry.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            if entry.get("type") == "turn_context":
+                value = payload.get("model")
+                model = value if isinstance(value, str) and value.strip() else "unknown-codex-model"
+                continue
+            if entry.get("type") != "event_msg" or payload.get("type") != "token_count":
+                continue
+            timestamp = entry.get("timestamp")
+            day = day_of(timestamp, zone)
+            # Meter-only and duplicate events can still carry a newer meter.
+            self._collect_meter(payload.get("rate_limits"), timestamp, day,
+                                result, since, until, zone)
+            info = payload.get("info")
+            if info is None:
+                continue
+            usage = info.get("total_token_usage") if isinstance(info, dict) else None
+            if not isinstance(usage, dict) or any(
+                key not in usage for key in ("input_tokens", "output_tokens", "total_tokens")
+            ):
+                result.invalid_records += 1
+                continue
+            counts = tuple(_count_of(usage, key) for key in self._COUNTERS)
+            if any(value is _MALFORMED for value in counts):
+                result.invalid_records += 1
+                continue
+            if (counts[1] + counts[2] > counts[0] or counts[4] > counts[3]
+                    or counts[-1] != counts[0] + counts[3]):
+                result.invalid_records += 1
+                continue
+            reset = previous is not None and counts[-1] < previous[-1]
+            delta = counts if previous is None or reset else tuple(
+                current - prior for current, prior in zip(counts, previous)
+            )
+            if any(value < 0 for value in delta) or delta[1] + delta[2] > delta[0] or delta[4] > delta[3]:
+                result.invalid_records += 1
+                continue
+            previous = counts
+            if reset:
+                result.counter_resets += 1
+            if not any(delta):
+                result.duplicate_records += 1
+                continue
+            if not _within(day, timestamp, since, until):
+                result.filtered_out += 1
+                continue
+            result.records.append(UsageRecord(
+                model=model,
+                input_tokens=delta[0] - delta[1] - delta[2],
+                output_tokens=delta[3],  # already includes reasoning_output_tokens
+                cache_read_tokens=delta[1],
+                # The rollout reports no cache lifetime. Preserve the count in
+                # the existing unsplit tier; no OpenAI rates are shipped.
+                cache_write_5m_tokens=delta[2],
+                cache_write_1h_tokens=0,
+                web_search_requests=0,
+                day=day,
+                dedup_key=(str(path), str(line_number)),
+                cache_split_exact=not bool(delta[2]),
+                timestamp=timestamp if isinstance(timestamp, str) else None,
+            ))
+
+    @staticmethod
+    def _collect_meter(
+        limits: object, timestamp: object, day: str | None, result: CollectionResult,
+        since: Bound | None, until: Bound | None, zone: tzinfo | SystemLocal,
+    ) -> None:
+        if limits is None:
+            return
+        # day_of preserves raw prefixes for usage; a meter window needs a real
+        # calendar day, including when only one end of the window is supplied.
+        try:
+            meter_day = date.fromisoformat(day).isoformat() if day is not None else None
+        except ValueError:
+            meter_day = None
+        if not _within(meter_day, timestamp, since, until):
+            return
+        if not isinstance(limits, dict):
+            result.invalid_rate_limits += 1
+            return
+        primary = limits.get("primary")
+        if primary is None:
+            return
+        if not isinstance(primary, dict):
+            result.invalid_rate_limits += 1
+            return
+        used = primary.get("used_percent")
+        window = primary.get("window_minutes")
+        reset = primary.get("resets_at")
+        if (isinstance(used, bool) or not isinstance(used, (int, float))
+                or (isinstance(used, float) and not math.isfinite(used)) or used < 0
+                or isinstance(window, bool) or not isinstance(window, int) or window <= 0
+                or isinstance(reset, bool) or not isinstance(reset, int)):
+            result.invalid_rate_limits += 1
+            return
+        try:
+            reset_instant = datetime.fromtimestamp(reset, timezone.utc)
+            local_reset = reset_instant.astimezone(None if isinstance(zone, SystemLocal) else zone)
+        except (ValueError, OverflowError, OSError):
+            result.invalid_rate_limits += 1
+            return
+        instant = _parse_instant(timestamp)
+        if instant is None:
+            result.unstamped_rate_limits += 1
+            return
+        known = result.rate_limits
+        if known is not None and instant <= _parse_instant(known.timestamp):
+            return
+        result.rate_limits = RateLimitSnapshot(
+            timestamp, used, window, reset, local_reset.isoformat(),
+        )
+
+
+def _within(
+    day: str | None,
+    timestamp: object,
+    since: Bound | None,
+    until: Bound | None,
+) -> bool:
+    """Whether a record belongs to the requested window.
+
+    Each edge applies its own rule, so a mixed window is simply the two rules
+    together. A day edge covers the whole calendar day in the report zone, as
+    it always has. An instant edge is half-open -- `--since` includes a record
+    stamped exactly at it, `--until` excludes one -- so two adjacent windows
+    that meet at an instant partition the records between them rather than
+    counting the boundary record twice.
+    """
+    if since is None and until is None:
+        return True
+
+    instant = None
+    if (since is not None and since.instant is not None) or (
+        until is not None and until.instant is not None
+    ):
+        instant = _parse_instant(timestamp)
+        if instant is None:
+            # An instant edge can only be applied to a record that carries a
+            # full instant. A record without one cannot be placed against it,
+            # and a windowed total must never silently absorb usage it cannot
+            # place -- the same rule the day edge below applies to `day is
+            # None`.
+            return False
+
+    if since is not None:
+        if since.instant is not None:
+            if instant < since.instant:
+                return False
+        elif day is None or day < since.day:
+            return False
+    if until is not None:
+        if until.instant is not None:
+            if instant >= until.instant:
+                return False
+        elif day is None or day > until.day:
+            return False
+    return True
 
 
 _ADAPTERS: dict[str, RuntimeAdapter] = {
     CLAUDE_CODE: ClaudeCodeAdapter(),
-    "codex": UnavailableAdapter(
-        "codex",
-        "no local usage source is established for this runtime, so its usage "
-        "cannot be measured from this machine.",
-    ),
+    CODEX: CodexAdapter(),
 }
 
 

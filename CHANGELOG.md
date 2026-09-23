@@ -8,6 +8,19 @@ A release is a snapshot of the whole collection. Skills are distributed
 together but installed independently, so the exact tool versions each release
 pins are also recorded in [Pinned tool versions](#pinned-tool-versions).
 
+## [0.4.3] - 2026-09-23
+
+### Added
+
+- Report Codex usage by service tier with GPT-6 Astra API list pricing in [usage-cost](skills/usage-cost/SKILL.md#codex).
+- Filter Codex token totals by session working directory in [usage-cost](skills/usage-cost/SKILL.md#codex).
+- Add `claude-opus-5-5`, `gpt-6-sol` and `gpt-6-luna` to the [usage-cost](skills/usage-cost/SKILL.md#rate-table) rate table.
+
+### Fixed
+
+- Select the newest weekly Codex meter window across legacy records and timing jitter in [usage-cost](skills/usage-cost/SKILL.md#codex).
+- Skip models.dev entries without a price instead of aborting the rate-table cross-check in [usage-cost](skills/usage-cost/SKILL.md#refreshing-from-the-modelsdev-catalog).
+
 ## [0.4.2] - 2026-09-05
 
 ### Added
@@ -140,6 +153,7 @@ reading every entry above.
 
 | Release | Skill | Pinned distribution |
 | --- | --- | --- |
+| 0.4.3 | `memory-lint` | `memory-lint==0.1.0` |
 | 0.4.2 | `memory-lint` | `memory-lint==0.1.0` |
 | 0.4.1 | `memory-lint` | `memory-lint==0.1.0` |
 | 0.4.0 | `memory-lint` | `memory-lint==0.1.0` |
@@ -147,6 +161,7 @@ reading every entry above.
 | 0.2.0 | `memory-lint` | `memory-lint==0.1.0` |
 | 0.1.0 | `memory-lint` | `memory-lint==0.1.0` |
 
+[0.4.3]: https://github.com/kiloloop/kiloloop-skills/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/kiloloop/kiloloop-skills/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/kiloloop/kiloloop-skills/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/kiloloop/kiloloop-skills/compare/v0.3.0...v0.4.0

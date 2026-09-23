@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
@@ -98,6 +99,9 @@ class ModelRates:
     cache_read: Decimal
     cache_write_5m: Decimal
     cache_write_1h: Decimal
+    long_context_threshold: int | None = None
+    long_context_input_multiplier: Decimal = Decimal(1)
+    long_context_output_multiplier: Decimal = Decimal(1)
 
 
 @dataclass(frozen=True)
@@ -220,6 +224,17 @@ class RateTable:
             raise RateTableError(f"{name} must be an object with 'input' and 'output' rates")
         cls._validate_rates(name, entry)
         cls._validate_multipliers(name, entry)
+        long_context = entry.get("long_context")
+        if long_context is not None:
+            if not isinstance(long_context, dict):
+                raise RateTableError(f"{name}.long_context must be an object")
+            threshold = long_context.get("input_tokens_above")
+            if type(threshold) is not int or threshold <= 0:
+                raise RateTableError(f"{name}.long_context.input_tokens_above must be a positive integer")
+            for key in ("input_multiplier", "output_multiplier"):
+                if key not in long_context:
+                    raise RateTableError(f"{name}.long_context is missing {key}")
+                _rate(f"{name}.long_context.{key}", long_context[key])
         speeds = entry.get("speeds")
         if speeds is None:
             return
@@ -294,8 +309,12 @@ class RateTable:
         display = str(entry.get("display_name", base))
         if variant:
             display = f"{display} ({variant})"
+        long_context = entry.get("long_context") or {}
         return ModelRates(
             display_name=display,
+            long_context_threshold=long_context.get("input_tokens_above"),
+            long_context_input_multiplier=_rate("long_context.input_multiplier", long_context.get("input_multiplier", 1)),
+            long_context_output_multiplier=_rate("long_context.output_multiplier", long_context.get("output_multiplier", 1)),
             input=input_rate,
             output=output_rate,
             cache_read=input_rate * multipliers["read"],
@@ -325,6 +344,7 @@ class ModelTotals:
     cost: Decimal | None = None
     priced: bool = True
     billable: bool = True
+    service_tier: str | None = None
 
     @property
     def total_tokens(self) -> int:
@@ -391,6 +411,7 @@ class Report:
     window_by_instant: bool = False
     window_since_instant: str | None = None
     window_until_instant: str | None = None
+    cwd: str | None = None
 
     @property
     def total_tokens(self) -> int:
@@ -454,25 +475,30 @@ def build_report(
         since=since,
         until=until,
     )
-    totals: dict[str, ModelTotals] = {}
-    resolved: dict[str, ModelRates | None] = {}
+    totals: dict[tuple[str, str | None], ModelTotals] = {}
+    resolved: dict[tuple[str, str | None], ModelRates | None] = {}
 
     for record in records:
-        entry = totals.get(record.model)
+        tier = (record.service_tier or "unknown") if runtime == CODEX else None
+        key = (record.model, tier)
+        entry = totals.get(key)
         if entry is None:
             billable = record.model not in rates.non_billable
-            model_rates = rates.lookup(record.model) if billable else None
-            resolved[record.model] = model_rates
+            pricing_id = record.model if tier in (None, "standard") else f"{record.model}#{tier}"
+            model_rates = rates.lookup(pricing_id) if billable and tier != "unknown" else None
+            resolved[key] = model_rates
             entry = ModelTotals(
                 model_id=record.model,
+                service_tier=tier,
                 display_name=(
-                    model_rates.display_name if model_rates is not None else record.model
+                    (model_rates.display_name.removesuffix(" (fast)") if tier == "fast"
+                     else model_rates.display_name) if model_rates is not None else record.model
                 ),
                 priced=model_rates is not None,
                 billable=billable,
                 cost=Decimal(0) if model_rates is not None else None,
             )
-            totals[record.model] = entry
+            totals[key] = entry
 
         entry.requests += 1
         entry.input_tokens += record.input_tokens
@@ -482,7 +508,7 @@ def build_report(
         entry.cache_write_1h_tokens += record.cache_write_1h_tokens
         entry.web_search_requests += record.web_search_requests
 
-        model_rates = resolved[record.model]
+        model_rates = resolved[key]
         if model_rates is not None:
             assert entry.cost is not None
             entry.cost += _cost_of(record, model_rates)
@@ -492,14 +518,15 @@ def build_report(
             report.non_billable_models.append(entry.model_id)
         elif not entry.priced:
             report.complete = False
-            report.unpriced_models.append(entry.model_id)
+            if entry.model_id not in report.unpriced_models:
+                report.unpriced_models.append(entry.model_id)
         else:
             assert entry.cost is not None
             entry.cost = entry.cost.quantize(MICRO)
             report.total_cost += entry.cost
 
     report.models = sorted(
-        totals.values(), key=lambda item: (-item.total_tokens, item.model_id)
+        totals.values(), key=lambda item: (-item.total_tokens, item.model_id, item.service_tier or "")
     )
     _attach_server_tools(report, rates)
     report.total_cost = report.total_cost.quantize(MICRO)
@@ -541,12 +568,18 @@ def _attach_server_tools(report: Report, rates: RateTable) -> None:
 
 
 def _cost_of(record: UsageRecord, rates: ModelRates) -> Decimal:
+    input_multiplier = output_multiplier = Decimal(1)
+    prompt_tokens = (record.input_tokens + record.cache_read_tokens
+                     + record.cache_write_5m_tokens + record.cache_write_1h_tokens)
+    if rates.long_context_threshold is not None and prompt_tokens > rates.long_context_threshold:
+        input_multiplier = rates.long_context_input_multiplier
+        output_multiplier = rates.long_context_output_multiplier
     return (
-        Decimal(record.input_tokens) * rates.input
-        + Decimal(record.output_tokens) * rates.output
-        + Decimal(record.cache_read_tokens) * rates.cache_read
-        + Decimal(record.cache_write_5m_tokens) * rates.cache_write_5m
-        + Decimal(record.cache_write_1h_tokens) * rates.cache_write_1h
+        (Decimal(record.input_tokens) * rates.input
+         + Decimal(record.cache_read_tokens) * rates.cache_read
+         + Decimal(record.cache_write_5m_tokens) * rates.cache_write_5m
+         + Decimal(record.cache_write_1h_tokens) * rates.cache_write_1h) * input_multiplier
+        + Decimal(record.output_tokens) * rates.output * output_multiplier
     ) / PER_MILLION
 
 
@@ -646,13 +679,16 @@ def render_table(report: Report) -> str:
         "",
     ]
 
+    if report.cwd is not None:
+        lines.extend([f"Project cwd: {report.cwd} (exact match)",
+                      "Token totals are project-filtered; the meter remains account-wide.", ""])
     meter = report.collection.rate_limits if report.collection is not None else None
     if meter is not None:
-        window_name = "weekly" if meter.window_minutes == 10080 else "rolling"
         lines.extend([
             f"Codex account rate limit — server snapshot at {meter.timestamp}",
-            f"Used: {meter.used_percent}%    Window: {meter.window_minutes:,} minutes ({window_name})",
+            f"Used: {meter.used_percent}%    Window: {meter.window_minutes:,} minutes (weekly)",
             f"Resets: {meter.resets_at_local} ({report.timezone})",
+            "Highest observed usage in the newest weekly reset cluster (10-second tolerance).",
             "This server figure is not derived from the local token total.",
             "",
         ])
@@ -671,12 +707,15 @@ def render_table(report: Report) -> str:
             )
         if any(not row.complete for row in report.summary):
             lines.append("")
-            lines.append("* partial: this period contains a model with no published rate.")
+            lines.append("* partial: this period contains an unpriced model or tier."
+                         if report.runtime == CODEX else
+                         "* partial: this period contains a model with no published rate.")
         lines.append("")
         lines.append("By model, over the full window:")
         lines.append("")
 
-    header = f"{'Model':<34}{'Requests':>10}{'Tokens':>16}{'Cost':>14}"
+    tier_header = f"{'Tier':<10}" if report.runtime == CODEX else ""
+    header = f"{'Model':<34}{tier_header}{'Requests':>10}{'Tokens':>16}{'Cost':>14}"
     lines.append(header)
     lines.append("-" * len(header))
     for model in report.models:
@@ -689,7 +728,8 @@ def render_table(report: Report) -> str:
             cost = "UNPRICED"
         lines.append(
             f"{model.display_name[:32]:<34}"
-            f"{_thousands(model.requests):>10}"
+            + (f"{model.service_tier.title():<10}" if model.service_tier else "")
+            + f"{_thousands(model.requests):>10}"
             f"{_thousands(model.total_tokens):>16}"
             f"{cost:>14}"
         )
@@ -711,7 +751,8 @@ def render_table(report: Report) -> str:
     lines.append("-" * len(header))
     lines.append(
         f"{'Total':<34}"
-        f"{_thousands(report.total_requests + report.total_server_tool_requests):>10}"
+        + (" " * 10 if report.runtime == CODEX else "")
+        + f"{_thousands(report.total_requests + report.total_server_tool_requests):>10}"
         f"{_thousands(report.total_tokens):>16}"
         f"{_money(report.total_cost):>14}"
     )
@@ -725,7 +766,7 @@ def render_table(report: Report) -> str:
             "total but carry no cost."
         )
         lines.append("")
-    if report.unpriced_models:
+    if report.unpriced_models and report.runtime != CODEX:
         lines.append(
             "INCOMPLETE: no rate is published in the rate table for "
             f"{', '.join(sorted(report.unpriced_models))}. Their tokens appear in the "
@@ -733,6 +774,9 @@ def render_table(report: Report) -> str:
             "to rates.json to price them."
         )
         lines.append("")
+    if report.unpriced_models and report.runtime == CODEX:
+        lines.extend(["INCOMPLETE: rows with an unknown tier or no matching model/tier rate are "
+                      "UNPRICED; their tokens are counted but excluded from cost.", ""])
     if report.non_billable_models:
         lines.append(
             "Excluded as non-billable: "
@@ -781,6 +825,8 @@ def render_table(report: Report) -> str:
                 f"{_thousands(collection.reconciled_records)} request(s) had copies "
                 "whose counts differed; the most complete snapshot of each was used."
             )
+        if collection.cwd_filtered_out:
+            lines.append(f"{collection.cwd_filtered_out:,} in-window increment(s) excluded by the cwd filter.")
         if collection.filtered_out:
             lines.append(
                 f"{_thousands(collection.filtered_out)} request(s) fell outside the window."
@@ -875,6 +921,7 @@ def render_json(report: Report) -> str:
         "models": [
             {
                 "model_id": model.model_id,
+                **({"service_tier": model.service_tier} if model.service_tier is not None else {}),
                 "display_name": model.display_name,
                 "priced": model.priced,
                 "billable": model.billable,
@@ -893,6 +940,8 @@ def render_json(report: Report) -> str:
             for model in report.models
         ],
     }
+    if report.cwd is not None:
+        payload["project_filter"] = {"cwd": report.cwd, "match": "exact", "meter_scope": "account"}
     if report.server_tools:
         payload["server_tools"] = [
             {
@@ -922,6 +971,7 @@ def render_json(report: Report) -> str:
             "filtered_out": report.collection.filtered_out,
         }
         if report.runtime == CODEX:
+            payload["collection"]["cwd_filtered_out"] = report.collection.cwd_filtered_out
             payload["collection"]["counter_resets"] = report.collection.counter_resets
             payload["collection"]["invalid_rate_limits"] = report.collection.invalid_rate_limits
             payload["collection"]["unstamped_rate_limits"] = report.collection.unstamped_rate_limits
@@ -929,6 +979,11 @@ def render_json(report: Report) -> str:
         if meter is not None:
             payload["rate_limits"] = {
                 "source": "server_snapshot",
+                "scope": "account",
+                "limit_id": meter.limit_id,
+                "source_slot": meter.source_slot,
+                "selection": "highest_used_in_newest_reset_cluster",
+                "reset_tolerance_seconds": 10,
                 "timestamp": meter.timestamp,
                 "primary": {
                     "used_percent": meter.used_percent,
@@ -1064,6 +1119,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="override the directory holding the runtime's records",
     )
     parser.add_argument(
+        "--cwd", type=Path,
+        help="Codex only: exact normalized session working directory; meter stays account-wide",
+    )
+    parser.add_argument(
         "--since",
         type=_valid_window_edge,
         help=(
@@ -1107,6 +1166,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
+    if args.cwd is not None and args.runtime != CODEX:
+        print("ERROR: --cwd is supported only with --runtime codex.", file=sys.stderr)
+        return EXIT_ERROR
+    cwd = os.path.abspath(args.cwd.expanduser()) if args.cwd is not None else None
     try:
         rates = RateTable.load(args.rates)
     except RateTableError as error:
@@ -1134,7 +1197,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     adapter = get_adapter(args.runtime)
     try:
-        collection = adapter.collect(args.data_root, since, until, zone)
+        collection = adapter.collect(args.data_root, since, until, zone,
+                                     **({"cwd": cwd} if args.runtime == CODEX else {}))
     except RuntimeUnavailable as error:
         print(
             f"ERROR: usage is unavailable for runtime {error.runtime!r}: {error.reason}",
@@ -1173,6 +1237,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         # whatever path it arrives by.
         print(f"ERROR: {error}", file=sys.stderr)
         return EXIT_ERROR
+    report.cwd = cwd
     report.timezone = timezone_label(zone)
 
     renderer = render_json if args.format == "json" else render_table

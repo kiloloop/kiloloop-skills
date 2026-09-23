@@ -1,15 +1,15 @@
 {
   "schema_version": 1,
-  "rate_table_version": "2026-09-02",
+  "rate_table_version": "2026-09-23",
   "currency": "USD",
   "unit": "per_million_tokens",
   "source": "https://platform.claude.com/docs/en/about-claude/pricing",
-  "source_checked": "2026-09-02",
+  "source_checked": "2026-09-23",
   "catalog_cross_check": {
     "source": "https://github.com/anomalyco/models.dev",
     "provider": "anthropic",
-    "commit": "f7af17dfaf28e3e2fb7dbf6ca72ba73e8436d59e",
-    "checked": "2026-09-02"
+    "commit": "3487ff2546c77c2ed30bfa677a8cbb72708aee7c",
+    "checked": "2026-09-23"
   },
   "effective_date_policy": "Rates are the standard list prices published at the source on source_checked, with no scheduled future change applied ahead of its effective date. A run reports rate_table_version so a figure can be tied to the prices it used; it does not reprice historical usage at the rates in force on the day that usage occurred.",
   "note": "Rates are decimal strings so that loading them introduces no binary floating-point error. Cache rates are derived from the input rate using the multipliers below rather than stored per model, because the published pricing defines them that way. A model whose published cache pricing departs from the table's multipliers carries its own cache_multipliers block, which overrides only the tiers it names.",
@@ -54,6 +54,20 @@
       "display_name": "Claude Mythos 5",
       "input": "10.00",
       "output": "50.00"
+    },
+    "claude-opus-5-5": {
+      "display_name": "Claude Opus 5.5",
+      "input": "4.00",
+      "output": "20.00",
+      "cache_multipliers": {
+        "read": "0.05"
+      },
+      "speeds": {
+        "fast": {
+          "input": "8.00",
+          "output": "40.00"
+        }
+      }
     },
     "claude-opus-5": {
       "display_name": "Claude Opus 5",
@@ -111,6 +125,78 @@
       "display_name": "Claude Haiku 4.5",
       "input": "1.00",
       "output": "5.00"
+    },
+    "gpt-6-astra": {
+      "display_name": "GPT-6 Astra",
+      "input": "10.00",
+      "output": "50.00",
+      "cache_multipliers": {
+        "read": "0.1",
+        "write_5m": "1.25",
+        "write_1h": "1.25"
+      },
+      "speeds": {
+        "fast": {
+          "input": "20.00",
+          "output": "100.00"
+        }
+      },
+      "long_context": {
+        "input_tokens_above": 272000,
+        "input_multiplier": "2",
+        "output_multiplier": "1.5"
+      },
+      "source": "https://developers.openai.com/api/docs/models/gpt-6-astra",
+      "source_checked": "2026-09-21",
+      "note": "SOURCE: model page read 2026-09-21 UTC. Per million tokens: input $10, cached input $1, cache writes $12.50, output $50. Fast is 2x applicable API rates (not the Codex credit multiplier). Above 272K prompt tokens, input/cache rates double and output is 1.5x. Codex unsplit writes occupy the write_5m slot without a lifetime claim."
+    },
+    "gpt-6-sol": {
+      "display_name": "GPT-6 Sol",
+      "input": "2.00",
+      "output": "10.00",
+      "cache_multipliers": {
+        "read": "0.1",
+        "write_5m": "1.25",
+        "write_1h": "1.25"
+      },
+      "speeds": {
+        "fast": {
+          "input": "4.00",
+          "output": "20.00"
+        }
+      },
+      "long_context": {
+        "input_tokens_above": 272000,
+        "input_multiplier": "2",
+        "output_multiplier": "1.5"
+      },
+      "source": "https://developers.openai.com/api/docs/models/gpt-6-sol",
+      "source_checked": "2026-09-23",
+      "note": "SOURCE: model page read 2026-09-23 UTC. Per million tokens: input $2, cached input $0.20, cache writes $2.50, output $10. Fast is 2x applicable API rates (not the Codex credit multiplier). Above 272K prompt tokens, input/cache rates double and output is 1.5x. Codex unsplit writes occupy the write_5m slot without a lifetime claim."
+    },
+    "gpt-6-luna": {
+      "display_name": "GPT-6 Luna",
+      "input": "0.10",
+      "output": "0.50",
+      "cache_multipliers": {
+        "read": "0.1",
+        "write_5m": "1.25",
+        "write_1h": "1.25"
+      },
+      "speeds": {
+        "fast": {
+          "input": "0.20",
+          "output": "1.00"
+        }
+      },
+      "long_context": {
+        "input_tokens_above": 272000,
+        "input_multiplier": "2",
+        "output_multiplier": "1.5"
+      },
+      "source": "https://developers.openai.com/api/docs/models/gpt-6-luna",
+      "source_checked": "2026-09-23",
+      "note": "SOURCE: model page read 2026-09-23 UTC. Per million tokens: input $0.10, cached input $0.01, cache writes $0.125, output $0.50. Fast is 2x applicable API rates (not the Codex credit multiplier). Above 272K prompt tokens, input/cache rates double and output is 1.5x. Codex unsplit writes occupy the write_5m slot without a lifetime claim."
     }
   },
   "non_billable_models": [

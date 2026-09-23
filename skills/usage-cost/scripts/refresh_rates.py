@@ -19,11 +19,15 @@ reads nor writes that block. Rows the catalog lacks are left untouched, and
 `source_checked` — the date the published page was last read by a person — is
 never moved by this script.
 
+A catalog entry with no [cost] table has nothing to compare, so it is skipped
+and listed by id — unless the table has a row for that id, where a missing
+upstream price is a discrepancy and stops the run.
+
 Exit codes:
     0  the table agrees with the catalog, or --write brought it into agreement
     1  differences found and not written
-    2  the catalog or the table could not be read or is malformed, or --commit
-       is not a full commit SHA
+    2  the catalog or the table could not be read or is malformed, a table
+       row has no [cost] table upstream, or --commit is not a full commit SHA
 
 Provenance is a full 40-character commit SHA and nothing else. A branch, a
 tag, or an abbreviated SHA names whatever the repository holds today, so a
@@ -73,6 +77,10 @@ class CatalogError(Exception):
     pass
 
 
+class UnpricedEntry(CatalogError):
+    """A catalog entry with no [cost] table; the loaders skip it and list its id."""
+
+
 @dataclass(frozen=True)
 class CatalogEntry:
     model_id: str
@@ -94,6 +102,7 @@ class Diff:
     fast_notes: list[str] = field(default_factory=list)
     absent_upstream: list[str] = field(default_factory=list)
     aliases_skipped: list[str] = field(default_factory=list)
+    unpriced_skipped: list[str] = field(default_factory=list)
 
     @property
     def has_changes(self) -> bool:
@@ -170,9 +179,10 @@ def parse_entry(model_id: str, text: str, base_name: Callable[[str], str]) -> Ca
 
     Every shape the table cannot use is a CatalogError, never a guess: a key
     that should be a table but is not, a price that is not a number, a fast
-    mode that does not price both input and output. `base_name` resolves a
-    `base_model` reference to that model's display name and raises
-    CatalogError when the referenced file is missing or unreadable.
+    mode that does not price both input and output. An entry with no [cost]
+    table at all raises UnpricedEntry, which the loaders catch and skip.
+    `base_name` resolves a `base_model` reference to that model's display name
+    and raises CatalogError when the referenced file is missing or unreadable.
     """
     try:
         data = tomllib.loads(text)
@@ -181,7 +191,7 @@ def parse_entry(model_id: str, text: str, base_name: Callable[[str], str]) -> Ca
 
     cost = _table(model_id, data, "cost")
     if cost is None:
-        raise CatalogError(f"{model_id}: has no [cost] table; a priced row cannot be derived")
+        raise UnpricedEntry(f"{model_id}: has no [cost] table; a priced row cannot be derived")
     for required in ("input", "output"):
         if required not in cost:
             raise CatalogError(f"{model_id}: [cost] is missing {required!r}")
@@ -234,8 +244,14 @@ def _base_name_from_text(base_model: str, text: str) -> str:
     return name
 
 
-def load_catalog_from_dir(root: Path, provider: str) -> dict[str, CatalogEntry]:
-    """Read a checkout (or a vendored slice of one) laid out like the repository."""
+def load_catalog_from_dir(
+    root: Path, provider: str
+) -> tuple[dict[str, CatalogEntry], list[str]]:
+    """Read a checkout (or a vendored slice of one) laid out like the repository.
+
+    Returns the priced entries and the ids of entries skipped for having no
+    [cost] table.
+    """
     models_dir = root / "providers" / provider / "models"
     if not models_dir.is_dir():
         raise CatalogError(f"{models_dir} is not a directory")
@@ -247,11 +263,15 @@ def load_catalog_from_dir(root: Path, provider: str) -> dict[str, CatalogEntry]:
         return _base_name_from_text(base_model, path.read_text(encoding="utf-8"))
 
     catalog: dict[str, CatalogEntry] = {}
+    unpriced: list[str] = []
     for path in sorted(models_dir.glob("*.toml")):
-        catalog[path.stem] = parse_entry(path.stem, path.read_text(encoding="utf-8"), base_name)
+        try:
+            catalog[path.stem] = parse_entry(path.stem, path.read_text(encoding="utf-8"), base_name)
+        except UnpricedEntry:
+            unpriced.append(path.stem)
     if not catalog:
-        raise CatalogError(f"{models_dir} holds no model files")
-    return catalog
+        raise CatalogError(f"{models_dir} holds no model files with a [cost] table")
+    return catalog, unpriced
 
 
 def _http_get(url: str, token: str | None) -> bytes:
@@ -269,12 +289,13 @@ def _http_get(url: str, token: str | None) -> bytes:
 
 def fetch_catalog_from_commit(
     repo: str, commit: str, provider: str, token: str | None = None
-) -> dict[str, CatalogEntry]:
+) -> tuple[dict[str, CatalogEntry], list[str]]:
     """Read one provider's model files from the repository at an exact commit.
 
     A commit is the only pinnable form of the catalog: the published JSON
     endpoint carries no version or timestamp, so a table refreshed from it
-    could not say what it was refreshed from.
+    could not say what it was refreshed from. Returns what
+    load_catalog_from_dir returns.
     """
     listing_url = (
         f"https://api.github.com/repos/{repo}/contents/providers/{provider}/models?ref={commit}"
@@ -293,16 +314,20 @@ def fetch_catalog_from_commit(
         return _base_name_from_text(base_model, text)
 
     catalog: dict[str, CatalogEntry] = {}
+    unpriced: list[str] = []
     for item in sorted(listing, key=lambda entry: str(entry.get("name", ""))):
         name = item.get("name") if isinstance(item, dict) else None
         if not isinstance(name, str) or not name.endswith(".toml"):
             continue
         model_id = name[: -len(".toml")]
         text = _http_get(f"{raw_base}/providers/{provider}/models/{name}", token).decode("utf-8")
-        catalog[model_id] = parse_entry(model_id, text, base_name)
+        try:
+            catalog[model_id] = parse_entry(model_id, text, base_name)
+        except UnpricedEntry:
+            unpriced.append(model_id)
     if not catalog:
-        raise CatalogError(f"{listing_url}: no model files found")
-    return catalog
+        raise CatalogError(f"{listing_url}: no model files with a [cost] table found")
+    return catalog, unpriced
 
 
 # --- Comparison --------------------------------------------------------------
@@ -327,8 +352,13 @@ def _multiplier(value: Decimal) -> str:
     return format(value.normalize(), "f")
 
 
-def compare(payload: dict, table: RateTable, catalog: dict[str, CatalogEntry]) -> Diff:
-    diff = Diff()
+def compare(
+    payload: dict,
+    table: RateTable,
+    catalog: dict[str, CatalogEntry],
+    unpriced: list[str] | None = None,
+) -> Diff:
+    diff = Diff(unpriced_skipped=sorted(unpriced or []))
     default_read = Decimal(str(payload["cache_multipliers"]["read"]))
     models = payload["models"]
 
@@ -463,6 +493,8 @@ def render(diff: Diff, payload: dict, source_label: str, default_read: Decimal) 
         )
     if diff.aliases_skipped:
         lines.append("  dated aliases covered by their base id: " + ", ".join(diff.aliases_skipped))
+    if diff.unpriced_skipped:
+        lines.append("  no [cost] table upstream, skipped: " + ", ".join(diff.unpriced_skipped))
     if not diff.has_changes:
         lines.append("  every catalog row agrees with the table")
     return "\n".join(lines)
@@ -528,12 +560,18 @@ def main(argv: list[str] | None = None) -> int:
         table = RateTable.load(args.rates)
         payload = json.loads(args.rates.read_text(encoding="utf-8"))
         if args.catalog_dir is not None:
-            catalog = load_catalog_from_dir(args.catalog_dir, args.provider)
+            catalog, unpriced = load_catalog_from_dir(args.catalog_dir, args.provider)
             source_label = f"{args.catalog_dir} ({args.provider})"
         else:
             token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
-            catalog = fetch_catalog_from_commit(args.repo, args.commit, args.provider, token)
+            catalog, unpriced = fetch_catalog_from_commit(args.repo, args.commit, args.provider, token)
             source_label = f"{args.repo}@{args.commit[:12]} ({args.provider})"
+        priced_here = [model_id for model_id in unpriced if model_id in payload["models"]]
+        if priced_here:
+            raise CatalogError(
+                f"{', '.join(priced_here)}: has no [cost] table upstream, but the rate table "
+                "has a row for it; the row cannot be compared"
+            )
     except (
         RateTableError, CatalogError, OSError, json.JSONDecodeError, UnicodeDecodeError
     ) as error:
@@ -541,7 +579,7 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_ERROR
 
     default_read = Decimal(str(payload["cache_multipliers"]["read"]))
-    diff = compare(payload, table, catalog)
+    diff = compare(payload, table, catalog, unpriced)
     print(render(diff, payload, source_label, default_read))
 
     if not args.write:

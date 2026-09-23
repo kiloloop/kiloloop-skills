@@ -339,7 +339,6 @@ def test_malformed_catalog_entries_are_errors_not_guesses(tmp_path: Path) -> Non
     priced = "[cost]\ninput = 1\noutput = 5\n"
     malformed = {
         "not-toml": "[cost\ninput = 1\n",
-        "no-cost": 'name = "Broken"\n',
         "cost-is-a-string": 'cost = "cheap"\n',
         "cost-is-an-array": "cost = [1, 5]\n",
         "missing-output": "[cost]\ninput = 1\n",
@@ -382,10 +381,62 @@ def test_malformed_catalog_entries_are_errors_not_guesses(tmp_path: Path) -> Non
         "claude-empty-modes": priced + "[experimental.modes]\n",
     }
     catalog = _write_catalog(tmp_path / "accepted", accepted)
-    parsed = refresh_rates.load_catalog_from_dir(catalog, "anthropic")
+    parsed, unpriced = refresh_rates.load_catalog_from_dir(catalog, "anthropic")
+    assert unpriced == []
     assert parsed["claude-fast"].fast_input == Decimal("2")
     assert parsed["claude-other-experiment"].fast_input is None
     assert parsed["claude-empty-modes"].fast_input is None
+
+
+def test_an_entry_without_a_cost_table_is_skipped_unless_the_table_prices_it(
+    tmp_path: Path,
+) -> None:
+    """A catalog entry that prices nothing is skipped by id, not a reason to stop.
+
+    A provider directory can carry entries with no token rates at all, and one
+    of them used to abort the whole comparison before any row was read. The
+    skip is narrow: when the table has a row for that id, a missing upstream
+    price is a discrepancy, and the run exits 2 naming it.
+    """
+    catalog = _write_catalog(
+        tmp_path / "catalog",
+        {"claude-x": _toml(1, 5), "claude-image-latest": 'name = "Image"\n'},
+    )
+    row = {"display_name": "Claude X", "input": "1.00", "output": "5.00"}
+    rates = tmp_path / "rates.json"
+    rates.write_text(json.dumps(_table(**{"claude-x": row})), encoding="utf-8")
+
+    completed = run("--catalog-dir", str(catalog), "--rates", str(rates))
+    assert completed.returncode == refresh_rates.EXIT_AGREES, completed.stderr + completed.stdout
+    assert "no [cost] table upstream, skipped: claude-image-latest" in completed.stdout
+    assert "every catalog row agrees with the table" in completed.stdout
+
+    # A write adds no row for the skipped id.
+    written = run(
+        "--catalog-dir", str(catalog), "--rates", str(rates),
+        "--write", "--today", "2026-09-23", "--commit", SYNTHETIC_COMMIT,
+    )
+    assert written.returncode == refresh_rates.EXIT_AGREES, written.stderr
+    assert sorted(json.loads(rates.read_text())["models"]) == ["claude-x"]
+
+    # The same entry fails loudly once the table has a row for it.
+    asked = tmp_path / "asked.json"
+    asked.write_text(
+        json.dumps(_table(**{"claude-x": row, "claude-image-latest": {**row, "display_name": "Image"}})),
+        encoding="utf-8",
+    )
+    before = asked.read_bytes()
+    for extra in ((), ("--write", "--today", "2026-09-23", "--commit", SYNTHETIC_COMMIT)):
+        completed = run("--catalog-dir", str(catalog), "--rates", str(asked), *extra)
+        assert_refused(completed, f"priced id without a cost table {extra}")
+        assert "claude-image-latest: has no [cost] table upstream" in completed.stderr
+    assert asked.read_bytes() == before
+
+    # A catalog in which nothing is priced has nothing to compare.
+    unpriced_only = _write_catalog(tmp_path / "unpriced-only", {"claude-image-latest": 'name = "Image"\n'})
+    completed = run("--catalog-dir", str(unpriced_only), "--rates", str(rates))
+    assert_refused(completed, "unpriced-only catalog")
+    assert "no model files with a [cost] table" in completed.stderr
 
 
 def test_a_base_model_reference_must_resolve_to_a_named_file(tmp_path: Path) -> None:
@@ -425,7 +476,8 @@ def test_a_base_model_reference_must_resolve_to_a_named_file(tmp_path: Path) -> 
         {"claude-named": 'base_model = "anthropic/claude-named"\n' + priced},
         {"anthropic/claude-named": 'name = "Claude Named"\n'},
     )
-    assert refresh_rates.load_catalog_from_dir(catalog, "anthropic")["claude-named"].display_name == "Claude Named"
+    parsed, _ = refresh_rates.load_catalog_from_dir(catalog, "anthropic")
+    assert parsed["claude-named"].display_name == "Claude Named"
 
     # An empty provider directory is an error too, not a table with nothing to do.
     empty = tmp_path / "empty" / "providers" / "anthropic" / "models"

@@ -79,20 +79,23 @@ counting the record on the boundary. A datetime written without an offset is
 read in `--tz`; one written with an offset, or a trailing `Z`, is taken as
 written. The two forms mix, and a date-only window behaves exactly as before.
 
-For Codex's local rollouts and the latest recorded account meter:
+For Codex's local rollouts and the recorded weekly account meter:
 
 ```bash
 python scripts/usage_cost.py --runtime codex --since 2026-08-10 --until 2026-08-11 --tz UTC
 ```
 
-The standard model table shows token counts and `UNPRICED` because the shipped
-table has no OpenAI rates (exit `3`). When the window contains a meter snapshot,
-a separate block looks like this illustrative, perturbed example:
+The model table splits requests and tokens by Fast, Standard and unknown tier.
+GPT-6 Astra, Sol and Luna have published API list rates, including the 2× Fast
+premium and long-context surcharge; unknown tiers and models without rates stay
+`UNPRICED` (exit `3`). When the window contains a weekly Codex meter, a separate
+block looks like this illustrative, synthetic example:
 
 ```text
 Codex account rate limit — server snapshot at 2026-08-11T00:02:00Z
 Used: 62.5%    Window: 10,080 minutes (weekly)
 Resets: 2026-08-12T00:00:00+00:00 (UTC)
+Highest observed usage in the newest weekly reset cluster (10-second tolerance).
 This server figure is not derived from the local token total.
 ```
 
@@ -110,11 +113,28 @@ The meter is the server's account figure at the named instant, not a live read.
 | `--since` / `--until` | Restrict the window: a day (`YYYY-MM-DD`, the whole day in `--tz`) or an ISO 8601 datetime (an instant; `--since` inclusive, `--until` exclusive). |
 | `--tz` | Zone whose calendar days usage is bucketed into. Default `local`. |
 | `--rates` | Use a different rate table. |
+| `--cwd` | Codex only: exact session working-directory match; meter stays account-wide. |
 | `--format` | `table` (default) or `json`. |
 
 Standard library only. Nothing to install, no dependency on any package
 index, and the report makes no network calls. (The optional rate-table refresh
 described below is the one script that does.)
+
+To scope tokens to one Codex project, add `--cwd /path/to/project`. Matching is
+exact after lexical normalization, so child worktrees are separate. Sessions
+without a recorded cwd are excluded. The meter remains account-wide, including
+snapshots from excluded sessions, and the report labels that distinction.
+The `cwd_filtered_out` diagnostic counts excluded increments only inside the
+selected date or time window.
+
+The meter accepts `codex` weekly windows (or legacy records with an absent or
+null limit ID and an explicit weekly duration). Weekly durations allow ±1 minute
+(10079–10081), preserving the reported value. It omits other limits and takes the highest
+usage within 10 seconds of the newest reset epoch. A later stale-window record
+cannot replace it. Tier attribution follows the most recent preceding
+`thread_settings_applied` event in each file. See the
+[Codex rules and pricing sources](SKILL.md#codex) for selection details and
+limitations of per-increment list-price estimates.
 
 ### Exit codes carry meaning
 
@@ -205,7 +225,7 @@ day on either would be over-priced four times over at the default.
 | Runtime | Status |
 | --- | --- |
 | `claude-code` | Supported — reads local session transcripts. |
-| `codex` | Local rollout token counts and recorded account meter; exits `4` without a source. OpenAI models remain unpriced. |
+| `codex` | Local rollout token counts and recorded account meter; exits `4` without a source. GPT-6 Astra, Sol and Luna have list rates; unknown tiers/models remain unpriced. |
 
 Adding a runtime means one adapter class plus one registry entry — deduplication,
 pricing, and reporting are all runtime-agnostic.

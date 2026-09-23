@@ -39,6 +39,7 @@ python scripts/usage_cost.py --since 2026-08-11T17:20 --until 2026-08-11T18:00
 | `--since` / `--until` | Restrict the window. A day (`YYYY-MM-DD`) covers that whole day in `--tz`; an ISO 8601 datetime is an instant — `--since` inclusive, `--until` exclusive. The two forms mix. |
 | `--tz` | Zone whose calendar days usage is bucketed into. Default `local`; also accepts `UTC` or an IANA name. |
 | `--rates` | Use a different rate table. |
+| `--cwd` | Codex only: filter tokens to an exact normalized session working directory; the meter stays account-wide. |
 | `--format` | `table` (default) or `json`. |
 
 **A day edge and an instant edge mean different things, and each keeps its
@@ -161,9 +162,20 @@ Two properties of the format shape the implementation:
 
 The `codex` adapter reads `rollout-*.jsonl` recursively under
 `~/.codex/sessions` (or `$CODEX_HOME/sessions`). `--data-root` replaces the
-sessions directory. It reads only record type, timestamp, `turn_context` model,
-and `event_msg` payloads whose type is `token_count`; prompts, session metadata,
-and response text are not used or emitted.
+sessions directory. It reads record type, timestamp, `turn_context` model,
+the first absolute `cwd` in `session_meta` or `turn_context`, and `event_msg`
+payloads of type `token_count` or `thread_settings_applied`. Prompts and
+response text are not used or emitted.
+
+`--cwd <path>` selects whole sessions by exact normalized path, using that
+first recorded absolute cwd. `~` and relative paths in the CLI argument are
+expanded relative to the current shell directory; `.`/`..` and trailing
+separators are normalized lexically, without resolving symlinks. Child paths,
+including worktrees, are separate projects; missing cwd never matches. Later
+turn contexts do not reassign a session. The token table and summaries are
+filtered, but meters still include all scanned sessions in the requested time
+window. Table output and JSON `project_filter.meter_scope` explicitly say the
+meter is account-wide.
 
 For each file, walk `payload.info.total_token_usage` in file order. Subtract
 the previous cumulative snapshot to obtain each positive increment. An equal
@@ -187,9 +199,30 @@ input as `input_tokens - cached_input_tokens - cache_write_input_tokens`.
 so retain `output_tokens` without adding `reasoning_output_tokens` again.
 Cache reads map to `cache_read`; unsplit cache writes use the existing
 `cache_write_5m` count slot, with `cache_write_1h` zero. This preserves tokens
-without asserting a five-minute lifetime: Codex records no cache lifetime,
-and the shipped table has no OpenAI rates. Codex rows therefore remain
-`UNPRICED` and a run containing them exits `3`.
+without asserting a five-minute lifetime: Codex records no cache lifetime.
+The Astra rate row prices these writes at its published cache-write rate.
+
+Each increment takes the latest preceding
+`event_msg.payload.thread_settings.service_tier` on a
+`thread_settings_applied` event in the same file. `priority` and `fast` map to
+Fast, `default` to Standard; missing or unrecognized settings map to `unknown`.
+Ordinary turn contexts do not reset the applied setting. The table has a Tier
+column, and JSON `models` has one row per `(model_id, service_tier)` with tier
+values `fast`, `standard`, or `unknown`, including separate tokens and requests.
+These are recorded settings, not proof of the actual served tier.
+
+SOURCE: [OpenAI Fast mode](https://developers.openai.com/api/docs/guides/fast-mode)
+and the [Astra model page](https://developers.openai.com/api/docs/models/gpt-6-astra),
+read 2026-09-21 UTC. Fast and priority are equivalent API tier names. Astra
+list rates per million are $10 input, $1 cached input, $12.50 cache writes and
+$50 output; Fast costs **2×** applicable API rates, independently of Codex
+credit consumption. The table stores Fast in the model's `speeds.fast` entry.
+Above 272,000 input tokens, Astra's `long_context` rule multiplies input/cache
+prices by 2 and output by 1.5 before the Fast premium. This calculation treats
+each positive cumulative increment as a request; batched or partial increments
+cannot establish exact per-request long-context billing. Unknown tiers, models
+without rates, and Fast rows lacking a Fast rate stay `UNPRICED` (exit `3`),
+with tokens counted and cost withheld.
 
 Input, output, and total counters are required; absent cache/reasoning fields
 contribute zero. Present counters must be non-negative integers, subsets must
@@ -199,14 +232,26 @@ Claude adapter, JSON decode failures and non-object lines increment
 `malformed_lines`; blank lines are ignored. Unreadable files are counted, and
 an absent, empty, or wholly unreadable rollout source exits `4`.
 
-The separate rate-limit block carries the latest valid `rate_limits.primary`
-snapshot **inside the selected window**, including records with repeated usage
-or `info: null`. It names the source record's timestamp, reports the server's
-`used_percent` and `window_minutes` (10,080 means weekly), and renders
-`resets_at` in `--tz`. JSON includes the raw epoch and `resets_at_local` under
-`rate_limits.primary`. Without an in-window snapshot the block/key is absent.
-This is an account meter observed at that instant, not a live query or a value
-derived from local token totals.
+The separate rate-limit block selects weekly snapshots **inside the selected
+window**, including records with repeated usage or `info: null`. It accepts
+`rate_limits.limit_id == "codex"` and integer `window_minutes` from 10079
+through 10081 (one week ±1 minute) in either `primary` or `secondary`.
+Older records with an absent or null `limit_id` are accepted only with that
+weekly duration. Other IDs and durations outside that range are omitted.
+
+The newest reset cluster consists of snapshots whose `resets_at` is within
+10 seconds of the greatest eligible reset epoch. This fixed anchor prevents
+chains of jitter from joining separate windows. Report the highest
+`used_percent` in that cluster, breaking ties by newest source timestamp, then
+reset epoch and source identity. A later snapshot from an older weekly window
+cannot replace it. The displayed timestamp and reset belong to the selected
+high-water snapshot; this is observed usage, not a live query or a value
+derived from local totals. JSON preserves the selected values under
+`rate_limits.primary`, adds the original `source_slot`, `limit_id` (null for
+legacy absence or null), `scope: account`, selection rule and reset tolerance.
+The original `window_minutes` is preserved in JSON and table output. Resets are
+also rendered in `--tz`. Without an eligible in-window snapshot, the block/key
+is absent.
 
 Meter diagnostics cover the selected local-day window: `invalid_rate_limits`
 counts malformed meter data, while `unstamped_rate_limits` counts otherwise
@@ -219,7 +264,9 @@ is stricter, and deliberately so: a record with no parseable instant cannot be
 placed against one at all, so its usage and its meter fall outside the window
 together and the record is counted in `filtered_out` rather than reaching
 `unstamped_rate_limits`. These counters do not change the scope of
-file-reading or token-reconciliation diagnostics.
+file-reading or token-reconciliation diagnostics. `cwd_filtered_out` counts
+valid, nonduplicate token increments excluded by `--cwd` **inside the selected
+window**; increments outside it are counted in `filtered_out` instead.
 
 ### What the source does not cover
 
@@ -257,7 +304,7 @@ Rates live in `scripts/rates.json`, a versioned data file the report stamps by
 `rate_table_version`. Rates are per million tokens, stored as decimal strings so
 loading introduces no floating-point error, and all arithmetic is decimal.
 
-Only input and output rates are stored per model. Cache rates are derived
+Input and output rates are stored per model. Cache rates are derived
 from the input rate by multiplier, the way the published pricing defines them.
 The table's `cache_multipliers` are the default:
 
@@ -277,6 +324,12 @@ keep the default write multipliers. A malformed override is a rate-table error
 A model may also carry a `speeds` block for a variant that prices differently,
 such as fast mode. A variant inherits the model's multipliers and may layer its
 own on top.
+
+An optional per-model `long_context` block declares `input_tokens_above`,
+`input_multiplier` (also applied to cache rates), and `output_multiplier`.
+The threshold is a positive integer and the multipliers are finite,
+non-negative decimals. The surcharge applies only above the threshold, to the
+full increment, and combines with the selected speed variant.
 
 **Model-id resolution is deliberately narrow**: an exact match, then the same id
 with a trailing `-YYYYMMDD` release-date suffix removed. Nothing is matched by
@@ -367,7 +420,7 @@ moved by the script.
 | Runtime | Status |
 | --- | --- |
 | `claude-code` | Supported — reads local session transcripts. |
-| `codex` | Supported — reads local rollouts and their server meter snapshots; token rows are unpriced with the shipped rates. Exits `4` when no rollout source is available. |
+| `codex` | Supported — reads local rollouts and their server meter snapshots; reports per-tier rows at GPT-6 Astra, Sol and Luna list rates; unknown tiers/models remain unpriced. Exits `4` when no rollout source is available. |
 
 An unsupported runtime returns a stated unavailable reason and a distinct exit
 code. It never returns an estimate. A runtime with no readable records is a

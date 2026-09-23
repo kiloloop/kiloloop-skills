@@ -181,6 +181,7 @@ class UsageRecord:
     # order two copies whose token counts are identical but whose pricing
     # identity (model or speed) differs.
     timestamp: str | None = None
+    service_tier: str | None = None
 
 
 @dataclass
@@ -201,6 +202,8 @@ class CollectionResult:
     invalid_rate_limits: int = 0
     unstamped_rate_limits: int = 0
     rate_limits: RateLimitSnapshot | None = None
+    meter_candidates: list[RateLimitSnapshot] = field(default_factory=list)
+    cwd_filtered_out: int = 0
 
 
 @dataclass(frozen=True)
@@ -212,6 +215,8 @@ class RateLimitSnapshot:
     window_minutes: int
     resets_at: int
     resets_at_local: str
+    limit_id: str | None = None
+    source_slot: str = "primary"
 
 
 @dataclass(frozen=True)
@@ -748,7 +753,7 @@ class CodexAdapter:
 
     def collect(
         self, data_root: Path | None, since: Bound | None, until: Bound | None,
-        zone: tzinfo | SystemLocal,
+        zone: tzinfo | SystemLocal, *, cwd: str | None = None,
     ) -> CollectionResult:
         available = self.availability(data_root)
         if not available.supported:
@@ -762,20 +767,34 @@ class CodexAdapter:
             try:
                 # Stream only this file; real rollouts can contain long prompts.
                 with path.open(encoding="utf-8", errors="replace") as lines:
-                    self._collect_lines(lines, path, result, since, until, zone)
+                    self._collect_lines(lines, path, result, since, until, zone, cwd)
             except OSError:
                 result.unreadable_files += 1
         if result.files_scanned and result.unreadable_files == result.files_scanned:
             raise RuntimeUnavailable(self.name, f"all {result.files_scanned} rollout file(s) "
                                      f"under {root} were unreadable; no usage could be measured.")
+        if result.meter_candidates:
+            # Anchor to the latest reset, not pairwise neighbours: a jitter
+            # chain cannot bridge windows, and file order cannot change it.
+            newest_reset = max(m.resets_at for m in result.meter_candidates)
+            cluster = [m for m in result.meter_candidates
+                       if newest_reset - m.resets_at <= 10]
+            result.rate_limits = max(cluster, key=lambda m: (
+                m.used_percent, _parse_instant(m.timestamp), m.resets_at,
+                m.limit_id or "", m.source_slot,
+            ))
+        result.meter_candidates.clear()
         return result
 
     def _collect_lines(
         self, lines: Iterable[str], path: Path, result: CollectionResult,
         since: Bound | None, until: Bound | None, zone: tzinfo | SystemLocal,
+        cwd: str | None = None,
     ) -> None:
         previous = None
         model = "unknown-codex-model"
+        service_tier = "unknown"
+        session_cwd = None
         for line_number, line in enumerate(lines, 1):
             if not line.strip():
                 continue
@@ -789,6 +808,16 @@ class CodexAdapter:
                 continue
             payload = entry.get("payload")
             if not isinstance(payload, dict):
+                continue
+            if session_cwd is None and entry.get("type") in ("session_meta", "turn_context"):
+                value = payload.get("cwd")
+                if isinstance(value, str) and os.path.isabs(value):
+                    session_cwd = os.path.normpath(value)
+            if entry.get("type") == "event_msg" and payload.get("type") == "thread_settings_applied":
+                settings = payload.get("thread_settings")
+                value = settings.get("service_tier") if isinstance(settings, dict) else None
+                service_tier = {"priority": "fast", "fast": "fast", "default": "standard"}.get(
+                    value if isinstance(value, str) else "", "unknown")
                 continue
             if entry.get("type") == "turn_context":
                 value = payload.get("model")
@@ -834,13 +863,17 @@ class CodexAdapter:
             if not _within(day, timestamp, since, until):
                 result.filtered_out += 1
                 continue
+            if cwd is not None and session_cwd != cwd:
+                result.cwd_filtered_out += 1
+                continue
             result.records.append(UsageRecord(
                 model=model,
+                service_tier=service_tier,
                 input_tokens=delta[0] - delta[1] - delta[2],
                 output_tokens=delta[3],  # already includes reasoning_output_tokens
                 cache_read_tokens=delta[1],
                 # The rollout reports no cache lifetime. Preserve the count in
-                # the existing unsplit tier; no OpenAI rates are shipped.
+                # the existing unsplit tier; pricing supplies the model rate.
                 cache_write_5m_tokens=delta[2],
                 cache_write_1h_tokens=0,
                 web_search_requests=0,
@@ -868,37 +901,44 @@ class CodexAdapter:
         if not isinstance(limits, dict):
             result.invalid_rate_limits += 1
             return
-        primary = limits.get("primary")
-        if primary is None:
+        # Missing and null IDs are legacy formats, accepted only with an
+        # explicit weekly duration. Named unrelated limits remain excluded.
+        if limits.get("limit_id") not in (None, "codex"):
             return
-        if not isinstance(primary, dict):
-            result.invalid_rate_limits += 1
-            return
-        used = primary.get("used_percent")
-        window = primary.get("window_minutes")
-        reset = primary.get("resets_at")
-        if (isinstance(used, bool) or not isinstance(used, (int, float))
-                or (isinstance(used, float) and not math.isfinite(used)) or used < 0
-                or isinstance(window, bool) or not isinstance(window, int) or window <= 0
-                or isinstance(reset, bool) or not isinstance(reset, int)):
-            result.invalid_rate_limits += 1
-            return
-        try:
-            reset_instant = datetime.fromtimestamp(reset, timezone.utc)
-            local_reset = reset_instant.astimezone(None if isinstance(zone, SystemLocal) else zone)
-        except (ValueError, OverflowError, OSError):
-            result.invalid_rate_limits += 1
-            return
-        instant = _parse_instant(timestamp)
-        if instant is None:
-            result.unstamped_rate_limits += 1
-            return
-        known = result.rate_limits
-        if known is not None and instant <= _parse_instant(known.timestamp):
-            return
-        result.rate_limits = RateLimitSnapshot(
-            timestamp, used, window, reset, local_reset.isoformat(),
-        )
+        for slot in ("primary", "secondary"):
+            primary = limits.get(slot)
+            if primary is None:
+                continue
+            if not isinstance(primary, dict):
+                result.invalid_rate_limits += 1
+                continue
+            used = primary.get("used_percent")
+            window = primary.get("window_minutes")
+            reset = primary.get("resets_at")
+            if (isinstance(used, bool) or not isinstance(used, (int, float))
+                    or (isinstance(used, float) and not math.isfinite(used)) or used < 0
+                    or isinstance(window, bool) or not isinstance(window, int) or window <= 0
+                    or isinstance(reset, bool) or not isinstance(reset, int)):
+                result.invalid_rate_limits += 1
+                continue
+            # Server durations can differ from a week by one minute.
+            if abs(window - 10080) > 1:
+                continue
+            try:
+                reset_instant = datetime.fromtimestamp(reset, timezone.utc)
+                local_reset = reset_instant.astimezone(None if isinstance(zone, SystemLocal) else zone)
+            except (ValueError, OverflowError, OSError):
+                result.invalid_rate_limits += 1
+                continue
+            instant = _parse_instant(timestamp)
+            if instant is None:
+                result.unstamped_rate_limits += 1
+                continue
+            result.meter_candidates.append(RateLimitSnapshot(
+                timestamp, used, window, reset, local_reset.isoformat(),
+                limits.get("limit_id"), slot,
+            ))
+
 
 
 def _within(

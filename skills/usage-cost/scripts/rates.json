@@ -1,15 +1,15 @@
 {
   "schema_version": 1,
-  "rate_table_version": "2026-09-23",
+  "rate_table_version": "2026-10-15",
   "currency": "USD",
   "unit": "per_million_tokens",
   "source": "https://platform.claude.com/docs/en/about-claude/pricing",
-  "source_checked": "2026-09-23",
+  "source_checked": "2026-10-15",
   "catalog_cross_check": {
     "source": "https://github.com/anomalyco/models.dev",
     "provider": "anthropic",
-    "commit": "3487ff2546c77c2ed30bfa677a8cbb72708aee7c",
-    "checked": "2026-09-23"
+    "commit": "860de7fed98d7a80ea77c8323b210f63eb6108b9",
+    "checked": "2026-10-15"
   },
   "effective_date_policy": "Rates are the standard list prices published at the source on source_checked, with no scheduled future change applied ahead of its effective date. A run reports rate_table_version so a figure can be tied to the prices it used; it does not reprice historical usage at the rates in force on the day that usage occurred.",
   "note": "Rates are decimal strings so that loading them introduces no binary floating-point error. Cache rates are derived from the input rate using the multipliers below rather than stored per model, because the published pricing defines them that way. A model whose published cache pricing departs from the table's multipliers carries its own cache_multipliers block, which overrides only the tiers it names.",
@@ -106,6 +106,14 @@
       "input": "5.00",
       "output": "25.00"
     },
+    "claude-sonnet-5-5": {
+      "display_name": "Claude Sonnet 5.5",
+      "input": "2.00",
+      "output": "10.00",
+      "cache_multipliers": {
+        "read": "0.05"
+      }
+    },
     "claude-sonnet-5": {
       "display_name": "Claude Sonnet 5",
       "input": "2.00",
@@ -120,6 +128,16 @@
       "display_name": "Claude Sonnet 4.5",
       "input": "3.00",
       "output": "15.00"
+    },
+    "claude-haiku-5-5": {
+      "display_name": "Claude Haiku 5.5",
+      "input": "0.10",
+      "output": "0.50",
+      "long_context": {
+        "input_tokens_above": 100000,
+        "input_multiplier": "5",
+        "output_multiplier": "5"
+      }
     },
     "claude-haiku-4-5": {
       "display_name": "Claude Haiku 4.5",

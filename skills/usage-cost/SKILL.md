@@ -389,9 +389,9 @@ or changed rows on request. It is a maintenance step for when a model launches,
 not something the report runs: the report never touches the network.
 
 ```
-$ python scripts/refresh_rates.py --commit f7af17dfaf28e3e2fb7dbf6ca72ba73e8436d59e
-anomalyco/models.dev@f7af17dfaf28 (anthropic) vs rates.json (rate_table_version 2026-09-02)
-  absent upstream, left as-is: claude-mythos-5, claude-mythos-5-1
+$ python scripts/refresh_rates.py --commit 860de7fed98d7a80ea77c8323b210f63eb6108b9
+anomalyco/models.dev@860de7fed98d (anthropic) vs rates.json (rate_table_version 2026-10-15)
+  absent upstream, left as-is: claude-mythos-5, claude-mythos-5-1, gpt-6-astra, gpt-6-luna, gpt-6-sol
   dated aliases covered by their base id: claude-haiku-4-5-20251001, claude-opus-4-5-20251101, claude-sonnet-4-5-20250929
   every catalog row agrees with the table
 ```

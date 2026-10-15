@@ -106,7 +106,10 @@ def test_shipped_table_agrees_with_the_pinned_catalog_slice() -> None:
     assert "\n  changed " not in completed.stdout
     assert "\n  note " not in completed.stdout
     # Limited-availability models the catalog does not list stay hand-entered.
-    assert "absent upstream, left as-is: claude-mythos-5, claude-mythos-5-1" in completed.stdout
+    absent_line = next(
+        line for line in completed.stdout.splitlines() if "absent upstream, left as-is:" in line
+    )
+    assert {"claude-mythos-5", "claude-mythos-5-1"} <= set(absent_line.split(": ", 1)[1].split(", "))
     # Dated aliases resolve to their base id in the table, so they add nothing.
     assert "claude-haiku-4-5-20251001" in completed.stdout
 

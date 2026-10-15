@@ -8,6 +8,12 @@ A release is a snapshot of the whole collection. Skills are distributed
 together but installed independently, so the exact tool versions each release
 pins are also recorded in [Pinned tool versions](#pinned-tool-versions).
 
+## [0.4.4] - 2026-10-15
+
+### Added
+
+- Add `claude-sonnet-5-5` and `claude-haiku-5-5`, with Haiku 5.5's over-100K-token prompt tier, to the [usage-cost](skills/usage-cost/SKILL.md#rate-table) rate table.
+
 ## [0.4.3] - 2026-09-23
 
 ### Added
@@ -153,6 +159,7 @@ reading every entry above.
 
 | Release | Skill | Pinned distribution |
 | --- | --- | --- |
+| 0.4.4 | `memory-lint` | `memory-lint==0.1.0` |
 | 0.4.3 | `memory-lint` | `memory-lint==0.1.0` |
 | 0.4.2 | `memory-lint` | `memory-lint==0.1.0` |
 | 0.4.1 | `memory-lint` | `memory-lint==0.1.0` |
@@ -161,6 +168,7 @@ reading every entry above.
 | 0.2.0 | `memory-lint` | `memory-lint==0.1.0` |
 | 0.1.0 | `memory-lint` | `memory-lint==0.1.0` |
 
+[0.4.4]: https://github.com/kiloloop/kiloloop-skills/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/kiloloop/kiloloop-skills/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/kiloloop/kiloloop-skills/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/kiloloop/kiloloop-skills/compare/v0.4.0...v0.4.1

@@ -551,3 +551,71 @@ def test_cwd_exclusions_count_only_in_window_increments(tmp_path):
     assert filtered["collection"]["filtered_out"] == 4
     assert "1 in-window increment(s) excluded by the cwd filter." in run(
         tmp_path, *args, "--cwd", project).stdout
+
+
+# Realistic rollout shapes; all counters, filenames and event identities are synthetic.
+# Costs are independently derived from published per-million prices, not rates.json.
+_NEW_CODEX_RATES = [
+    ("gpt-6.1-sol", "0.028600", "2", "0.10", "2.50", "10", True, True),
+    ("gpt-5.6-sol", "0.057400", "4", "0.40", "5", "20", True, True),
+    ("gpt-5.6", "0.057400", "4", "0.40", "5", "20", True, True),
+    ("gpt-5.6-terra", "0.030700", "2", "0.20", "2.50", "12", True, True),
+    ("gpt-5.6-luna", "0.003070", "0.20", "0.02", "0.25", "1.20", True, True),
+    ("gpt-5.5", "0.075500", "5", "0.50", "5", "30", False, True),
+    ("gpt-5.4", "0.037750", "2.50", "0.25", "2.50", "15", False, True),
+    ("gpt-5.4-mini", "0.011325", "0.75", "0.075", "0.75", "4.50", True, False),
+    ("gpt-5.2", "0.029925", "1.75", "0.175", "1.75", "14", True, False),
+    ("gpt-5.3-codex", "0.029925", "1.75", "0.175", "1.75", "14", True, False),
+]
+
+
+@pytest.mark.parametrize("model,expected,inp,read,write,out,fast,long", _NEW_CODEX_RATES)
+def test_added_codex_models_price_disjoint_cache_classes(tmp_path, model, expected, inp, read, write, out, fast, long):
+    from decimal import Decimal
+    context = {"type": "turn_context", "payload": {"model": model}}
+    # 8000 uncached + 1000 read + 1000 write + 1000 output = 11000 tokens.
+    for tier in ("default", "priority", "ultrafast", None):
+        _write(tmp_path, [context, _settings(tier), _token(10000, 1000, 1000, 1000)])
+        priced = tier == "default" or (tier == "priority" and fast)
+        result = _json(tmp_path, exit_code=0 if priced else 3)
+        assert result["totals"]["tokens"] == 11000
+        if priced:
+            expected_cost = Decimal(expected) * (2 if tier == "priority" else 1)
+            assert Decimal(result["totals"]["cost"]) == expected_cost
+            assert result["unpriced_models"] == []
+        else:
+            assert result["models"][0]["cost"] is None
+            assert result["totals"]["priced_tokens"] == 0
+            assert result["unpriced_models"] == [model]
+
+
+@pytest.mark.parametrize("model,expected,inp,read,write,out,fast,long", _NEW_CODEX_RATES)
+@pytest.mark.parametrize("prompt", [272000, 272001])
+def test_added_codex_context_boundary_prices_full_increment(tmp_path, model, expected, inp, read, write, out, fast, long, prompt):
+    from decimal import Decimal as D
+    context = {"type": "turn_context", "payload": {"model": model}}
+    # Input consists of prompt-200000 uncached, 100000 reads and 100000 writes.
+    input_cost = D(prompt - 200000) * D(inp) + 100000 * (D(read) + D(write))
+    output_cost = 2000 * D(out)
+    if long and prompt > 272000:
+        input_cost *= 2
+        output_cost *= D("1.5")
+    for tier in ("default", "priority"):
+        _write(tmp_path, [context, _settings(tier), _token(prompt, 2000, 100000, 100000)])
+        if tier == "priority" and not fast:
+            assert _json(tmp_path, exit_code=3)["models"][0]["cost"] is None
+        else:
+            cost = (input_cost + output_cost) / 1000000 * (2 if tier == "priority" else 1)
+            assert _json(tmp_path)["totals"]["cost"] == f"{cost:.6f}"
+
+
+@pytest.mark.parametrize("model", ["codex-auto-review", "gpt-6.1-astra", "gpt-6.1-sol-near-miss"])
+def test_unpublished_model_prices_are_not_guessed_or_non_billable(tmp_path, model):
+    _write(tmp_path, [{"type": "turn_context", "payload": {"model": model}},
+                      _settings("default"), _token(1000, 100)])
+    result = _json(tmp_path, exit_code=3)
+    assert result["unpriced_models"] == [model]
+    assert result["models"][0]["cost"] is None
+    assert result["totals"]["tokens"] == 1100
+    assert result["totals"]["priced_tokens"] == 0
+    assert not result["non_billable_models"]

@@ -365,6 +365,27 @@ actually covers, and `--format json` carries the same split as
 `totals.priced_tokens` and `totals.priced_requests`. A token count and a cost
 sitting on one line would otherwise read as the price of those tokens.
 
+### Codex model price coverage
+
+The table includes GPT-6.1 Sol, GPT-5.6 Sol/Terra/Luna (and the documented
+`gpt-5.6` Sol alias), plus the API-key models still named in the
+[Codex model guide](https://learn.chatgpt.com/docs/models): GPT-5.5, GPT-5.4,
+GPT-5.4 Mini, GPT-5.2 and GPT-5.3 Codex. Each added row records its official
+model-page source and a pinned OpenAI catalog cross-check. GPT-6.1 Sol reads
+cache at 0.05× input; GPT-5.5 and earlier charge no cache-write premium, so
+separately recorded write tokens use 1× input rather than the table default.
+
+GPT-5.5 and GPT-5.4 have Standard long-context prices but no published
+long-context Fast price. Their Fast rows remain `UNPRICED`: the current table
+cannot restrict a speed variant by context length. Other added models have
+2× Fast rates. Ultrafast is not resolved by the adapter and remains an unknown
+tier, even where OpenAI publishes its price. An unknown tier cannot be fixed
+by adding model data; the report keeps its tokens and withholds its cost.
+
+No published API price was established for `codex-auto-review` or
+`gpt-6.1-astra` on 2026-10-15 UTC. They remain `UNPRICED`; neither is treated
+as a free, non-billable local message or an alias of another model.
+
 ### Updating it
 
 1. Read the current published rates.
@@ -391,7 +412,7 @@ not something the report runs: the report never touches the network.
 ```
 $ python scripts/refresh_rates.py --commit 860de7fed98d7a80ea77c8323b210f63eb6108b9
 anomalyco/models.dev@860de7fed98d (anthropic) vs rates.json (rate_table_version 2026-10-15)
-  absent upstream, left as-is: claude-mythos-5, claude-mythos-5-1, gpt-6-astra, gpt-6-luna, gpt-6-sol
+  absent upstream, left as-is: claude-mythos-5, claude-mythos-5-1, gpt-5.2, gpt-5.3-codex, gpt-5.4, gpt-5.4-mini, gpt-5.5, gpt-5.6, gpt-5.6-luna, gpt-5.6-sol, gpt-5.6-terra, gpt-6-astra, gpt-6-luna, gpt-6-sol, gpt-6.1-sol
   dated aliases covered by their base id: claude-haiku-4-5-20251001, claude-opus-4-5-20251101, claude-sonnet-4-5-20250929
   every catalog row agrees with the table
 ```
@@ -420,7 +441,7 @@ moved by the script.
 | Runtime | Status |
 | --- | --- |
 | `claude-code` | Supported — reads local session transcripts. |
-| `codex` | Supported — reads local rollouts and their server meter snapshots; reports per-tier rows at GPT-6 Astra, Sol and Luna list rates; unknown tiers/models remain unpriced. Exits `4` when no rollout source is available. |
+| `codex` | Supported — reads local rollouts and their server meter snapshots; reports per-tier rows at published GPT-6/6.1, GPT-5.6 and API-key Codex model list rates; unknown tiers/models remain unpriced. Exits `4` when no rollout source is available. |
 
 An unsupported runtime returns a stated unavailable reason and a distinct exit
 code. It never returns an estimate. A runtime with no readable records is a

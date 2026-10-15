@@ -86,8 +86,9 @@ python scripts/usage_cost.py --runtime codex --since 2026-08-10 --until 2026-08-
 ```
 
 The model table splits requests and tokens by Fast, Standard and unknown tier.
-GPT-6 Astra, Sol and Luna have published API list rates, including the 2× Fast
-premium and long-context surcharge; unknown tiers and models without rates stay
+GPT-6 Astra, Sol and Luna, GPT-6.1 Sol, and the GPT-5.6 family have published
+API list rates, including the 2× Fast premium and long-context surcharge;
+unknown tiers and models without rates stay
 `UNPRICED` (exit `3`). When the window contains a weekly Codex meter, a separate
 block looks like this illustrative, synthetic example:
 
@@ -225,7 +226,7 @@ day on either would be over-priced four times over at the default.
 | Runtime | Status |
 | --- | --- |
 | `claude-code` | Supported — reads local session transcripts. |
-| `codex` | Local rollout token counts and recorded account meter; exits `4` without a source. GPT-6 Astra, Sol and Luna have list rates; unknown tiers/models remain unpriced. |
+| `codex` | Local rollout token counts and recorded account meter; exits `4` without a source. GPT-6/6.1, GPT-5.6 and documented API-key Codex models have list rates; unknown tiers/models remain unpriced. |
 
 Adding a runtime means one adapter class plus one registry entry — deduplication,
 pricing, and reporting are all runtime-agnostic.
@@ -241,6 +242,27 @@ fixture with hand-derived arithmetic, and in treating unknown models and
 unsupported runtimes as first-class reported states with their own exit codes.
 For browsing personal usage interactively, `ccusage` is the better experience.
 
+## Codex model price coverage
+
+The table includes GPT-6.1 Sol, GPT-5.6 Sol/Terra/Luna (and the documented
+`gpt-5.6` Sol alias), plus the API-key models still named in the
+[Codex model guide](https://learn.chatgpt.com/docs/models): GPT-5.5, GPT-5.4,
+GPT-5.4 Mini, GPT-5.2 and GPT-5.3 Codex. Each added row records its official
+model-page source and a pinned OpenAI catalog cross-check. GPT-6.1 Sol reads
+cache at 0.05× input; GPT-5.5 and earlier charge no cache-write premium, so
+separately recorded write tokens use 1× input rather than the table default.
+
+GPT-5.5 and GPT-5.4 have Standard long-context prices but no published
+long-context Fast price. Their Fast rows remain `UNPRICED`: the current table
+cannot restrict a speed variant by context length. Other added models have
+2× Fast rates. Ultrafast is not resolved by the adapter and remains an unknown
+tier, even where OpenAI publishes its price. An unknown tier cannot be fixed
+by adding model data; the report keeps its tokens and withholds its cost.
+
+No published API price was established for `codex-auto-review` or
+`gpt-6.1-astra` on 2026-10-15 UTC. They remain `UNPRICED`; neither is treated
+as a free, non-billable local message or an alias of another model.
+
 ## Refreshing the rate table
 
 `scripts/refresh_rates.py` compares the table with the
@@ -251,7 +273,7 @@ Run it when a model launches; the report itself never fetches anything.
 ```
 $ python scripts/refresh_rates.py --commit 860de7fed98d7a80ea77c8323b210f63eb6108b9
 anomalyco/models.dev@860de7fed98d (anthropic) vs rates.json (rate_table_version 2026-10-15)
-  absent upstream, left as-is: claude-mythos-5, claude-mythos-5-1, gpt-6-astra, gpt-6-luna, gpt-6-sol
+  absent upstream, left as-is: claude-mythos-5, claude-mythos-5-1, gpt-5.2, gpt-5.3-codex, gpt-5.4, gpt-5.4-mini, gpt-5.5, gpt-5.6, gpt-5.6-luna, gpt-5.6-sol, gpt-5.6-terra, gpt-6-astra, gpt-6-luna, gpt-6-sol, gpt-6.1-sol
   dated aliases covered by their base id: claude-haiku-4-5-20251001, claude-opus-4-5-20251101, claude-sonnet-4-5-20250929
   every catalog row agrees with the table
 ```

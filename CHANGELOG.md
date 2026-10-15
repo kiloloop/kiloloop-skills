@@ -8,6 +8,12 @@ A release is a snapshot of the whole collection. Skills are distributed
 together but installed independently, so the exact tool versions each release
 pins are also recorded in [Pinned tool versions](#pinned-tool-versions).
 
+## [0.4.5] - 2026-10-15
+
+### Added
+
+- Price GPT-6.1 Sol, GPT-5.6 models and documented API-key Codex models in [usage-cost](skills/usage-cost/SKILL.md#rate-table).
+
 ## [0.4.4] - 2026-10-15
 
 ### Added
@@ -159,6 +165,7 @@ reading every entry above.
 
 | Release | Skill | Pinned distribution |
 | --- | --- | --- |
+| 0.4.5 | `memory-lint` | `memory-lint==0.1.0` |
 | 0.4.4 | `memory-lint` | `memory-lint==0.1.0` |
 | 0.4.3 | `memory-lint` | `memory-lint==0.1.0` |
 | 0.4.2 | `memory-lint` | `memory-lint==0.1.0` |
@@ -168,6 +175,7 @@ reading every entry above.
 | 0.2.0 | `memory-lint` | `memory-lint==0.1.0` |
 | 0.1.0 | `memory-lint` | `memory-lint==0.1.0` |
 
+[0.4.5]: https://github.com/kiloloop/kiloloop-skills/compare/v0.4.4...v0.4.5
 [0.4.4]: https://github.com/kiloloop/kiloloop-skills/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/kiloloop/kiloloop-skills/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/kiloloop/kiloloop-skills/compare/v0.4.1...v0.4.2

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "rate_table_version": "2026-10-15",
+  "rate_table_version": "2026-10-29",
   "currency": "USD",
   "unit": "per_million_tokens",
   "source": "https://platform.claude.com/docs/en/about-claude/pricing",
@@ -245,6 +245,30 @@
         "checked": "2026-10-15"
       },
       "note": "Standard list rates; Fast is 2x. Above 272K prompt tokens, input/cache rates double and output is 1.5x. Unsplit Codex cache writes use write_5m without a lifetime claim. Tier prices cross-checked against https://developers.openai.com/api/docs/pricing. Ultrafast is not resolved by the Codex adapter and remains an unknown tier."
+    },
+    "gpt-6.1-terra": {
+      "display_name": "GPT-6.1 Terra",
+      "input": "1.00",
+      "output": "5.00",
+      "cache_multipliers": {
+        "read": "0.05",
+        "write_5m": "1.25",
+        "write_1h": "1.25"
+      },
+      "speeds": {
+        "fast": {
+          "input": "2.00",
+          "output": "10.00"
+        }
+      },
+      "long_context": {
+        "input_tokens_above": 272000,
+        "input_multiplier": "2",
+        "output_multiplier": "1.5"
+      },
+      "source": "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
+      "source_checked": "2026-10-29",
+      "note": "Standard list rates; Fast is 2x. Above 272K prompt tokens, input/cache rates double and output is 1.5x. Cross-checked against https://developers.openai.com/api/docs/pricing. Codex records unsplit cache writes in write_5m without a lifetime claim; this row uses the published 30-minute write rate (1.25x input). The inert write_1h slot repeats that rate, as in existing Codex rows; it does not price 12-hour retention (published at 2.5x input), which the adapter cannot distinguish. Unknown and Ultrafast tiers remain unpriced."
     },
     "gpt-5.6-sol": {
       "display_name": "GPT-5.6 Sol",

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Dispatch Brief"
+  short_description: "Write and lint a brief before delegating work"
+  default_prompt: "Use $dispatch-brief to write and lint a brief for the work I want to delegate."

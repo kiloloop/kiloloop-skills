@@ -136,8 +136,9 @@ or ref movement.
   YAML's more relaxed authoring syntax.
 - Commands inherit the caller's environment and run from the claims file's
   directory. This makes repo-native checks usable but does not sandbox them.
-- Command stdout and stderr are escaped onto one receipt line. Large outputs
-  stay complete and can make a pasted receipt noisy.
+- Command stdout and stderr are escaped onto one receipt line. Output that is
+  not valid UTF-8 is marked, and its undecodable bytes appear as `\xNN`
+  escapes. Large outputs stay complete and can make a pasted receipt noisy.
 - The default per-command timeout is 60 seconds. Override it with
   `--timeout-seconds` when a legitimate project check needs longer.
 

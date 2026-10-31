@@ -86,8 +86,8 @@ python scripts/usage_cost.py --runtime codex --since 2026-08-10 --until 2026-08-
 ```
 
 The model table splits requests and tokens by Fast, Standard and unknown tier.
-GPT-6 Astra, Sol and Luna, GPT-6.1 Sol, and the GPT-5.6 family have published
-API list rates, including the 2× Fast premium and long-context surcharge;
+GPT-6 Astra, Sol and Luna, GPT-6.1 Sol and Terra, and the GPT-5.6 family have
+published API list rates, including the 2× Fast premium and long-context surcharge;
 unknown tiers and models without rates stay
 `UNPRICED` (exit `3`). When the window contains a weekly Codex meter, a separate
 block looks like this illustrative, synthetic example:
@@ -244,13 +244,15 @@ For browsing personal usage interactively, `ccusage` is the better experience.
 
 ## Codex model price coverage
 
-The table includes GPT-6.1 Sol, GPT-5.6 Sol/Terra/Luna (and the documented
-`gpt-5.6` Sol alias), plus the API-key models still named in the
+The table includes GPT-6.1 Sol and Terra, GPT-5.6 Sol/Terra/Luna (and the
+documented `gpt-5.6` Sol alias), plus the API-key models still named in the
 [Codex model guide](https://learn.chatgpt.com/docs/models): GPT-5.5, GPT-5.4,
-GPT-5.4 Mini, GPT-5.2 and GPT-5.3 Codex. Each added row records its official
-model-page source and a pinned OpenAI catalog cross-check. GPT-6.1 Sol reads
-cache at 0.05× input; GPT-5.5 and earlier charge no cache-write premium, so
-separately recorded write tokens use 1× input rather than the table default.
+GPT-5.4 Mini, GPT-5.2 and GPT-5.3 Codex. These rows record their official
+model-page sources. GPT-6.1 Terra is cross-checked against OpenAI's pricing
+page; the other rows in this list also carry a pinned OpenAI catalog
+cross-check. GPT-6.1 Sol and Terra read cache at 0.05× input; GPT-5.5 and
+earlier charge no cache-write premium, so separately recorded write tokens
+use 1× input rather than the table default.
 
 GPT-5.5 and GPT-5.4 have Standard long-context prices but no published
 long-context Fast price. Their Fast rows remain `UNPRICED`: the current table

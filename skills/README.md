@@ -25,7 +25,9 @@ wrapper:
 ```
 
 A consumer can copy or install one child directory without pulling code from
-another skill or an unpublished package. The repository-level fixture runner
+another skill or an unpublished package. The root
+[README](../README.md#install) gives the copy commands for Claude Code and
+Codex. The repository-level fixture runner
 discovers both forms automatically. See [CONTRIBUTING.md](../CONTRIBUTING.md)
 for wrapper pin, failure-message, install, and clean-environment obligations.
 
@@ -53,3 +55,8 @@ for wrapper pin, failure-message, install, and clean-environment obligations.
   labels source-only inference, and surfaces measured overflow. See its
   [README](render-check/README.md) for the falsifiable claim, fixture output,
   tradeoffs, and limits.
+- [`dispatch-brief`](dispatch-brief/) — compose or review a brief before
+  handing work to another agent: a goal-only template plus a lint for missing
+  sections, side effects the brief asks for but never declares, and procedure
+  the receiver should own. See its [README](dispatch-brief/README.md) for the
+  falsifiable claim, fixture output, and limits.

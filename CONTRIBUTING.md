@@ -64,6 +64,11 @@ Wrapper-form skills must satisfy all of these obligations:
 Both forms must keep fixtures deterministic. Do not depend on an unpublished
 repository or a package available only from a private index.
 
+A `SKILL.md` must never put `$` directly before a digit. Claude Code
+substitutes skill arguments into `$0`, `$1`, and so on before the model reads
+the file, so an amount such as `$1.00` arrives rewritten. Write `USD 1.00`, or
+a placeholder such as `$X.XX`. The fixture runner rejects the pattern.
+
 ## Where changes originate
 
 Skill behavior, packaging, and runtime-adapter changes originate in this
@@ -81,6 +86,10 @@ Everything that survives `git archive` must be ready for public distribution:
   governance or review history.
 - Keep provenance in private pull-request metadata, not distributed files.
 - Keep generated artifacts and environment-specific state out of commits.
+  One exception covers this rule and the one above: an illustrative example
+  may keep the shape of a real run when every count in it is perturbed so no
+  actual figure is published, the example says so where it appears, and the
+  repository owner approves it.
 - Do not cite issues or pull requests by number. A short `#<number>` reference
   resolves against whichever repository renders it, so it points somewhere
   unintended once the file is distributed. Link to a full URL when a reference

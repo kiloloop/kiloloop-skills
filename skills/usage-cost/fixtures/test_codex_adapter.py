@@ -556,6 +556,7 @@ def test_cwd_exclusions_count_only_in_window_increments(tmp_path):
 # Realistic rollout shapes; all counters, filenames and event identities are synthetic.
 # Costs are independently derived from published per-million prices, not rates.json.
 _NEW_CODEX_RATES = [
+    ("gpt-6.1-terra", "0.014300", "1", "0.05", "1.25", "5", True, True),
     ("gpt-6.1-sol", "0.028600", "2", "0.10", "2.50", "10", True, True),
     ("gpt-5.6-sol", "0.057400", "4", "0.40", "5", "20", True, True),
     ("gpt-5.6", "0.057400", "4", "0.40", "5", "20", True, True),
@@ -609,7 +610,7 @@ def test_added_codex_context_boundary_prices_full_increment(tmp_path, model, exp
             assert _json(tmp_path)["totals"]["cost"] == f"{cost:.6f}"
 
 
-@pytest.mark.parametrize("model", ["codex-auto-review", "gpt-6.1-astra", "gpt-6.1-sol-near-miss"])
+@pytest.mark.parametrize("model", ["codex-auto-review", "gpt-6.1-astra", "gpt-6.1-sol-near-miss", "gpt-6.1-terra-near-miss"])
 def test_unpublished_model_prices_are_not_guessed_or_non_billable(tmp_path, model):
     _write(tmp_path, [{"type": "turn_context", "payload": {"model": model}},
                       _settings("default"), _token(1000, 100)])

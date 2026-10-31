@@ -58,6 +58,25 @@ def test_valid_skill_fixture_is_discovered_and_run(tmp_path: Path) -> None:
     assert "1 passed" in result.stdout
 
 
+def test_dollar_before_digit_in_skill_md_fails_structure_gate(
+    tmp_path: Path,
+) -> None:
+    skill = make_skill(tmp_path)
+    (skill / "SKILL.md").write_text(
+        "# Example\n\nCached input costs $1 per million.\n",
+        encoding="utf-8",
+    )
+    (skill / "fixtures" / "test_claim.py").write_text(
+        "def test_claim():\n    assert True\n",
+        encoding="utf-8",
+    )
+
+    result = run_harness(tmp_path)
+
+    assert result.returncode == 1
+    assert "example: SKILL.md line 3 puts `$` before a digit" in result.stderr
+
+
 def test_missing_embedded_script_fails_structure_gate(tmp_path: Path) -> None:
     skill = make_skill(tmp_path)
     (skill / "scripts" / "claim.py").unlink()

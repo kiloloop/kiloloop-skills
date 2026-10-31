@@ -88,6 +88,24 @@ def test_bare_cr_remains_content_within_an_lf_delimited_line(
     assert [match["line"] for match in payload["matches"]] == [2]
 
 
+def test_bare_cr_at_end_of_file_remains_content(tmp_path: Path) -> None:
+    corpus = tmp_path / "bare-cr-eof.md"
+    corpus.write_bytes(b"## Verified\r\n## Verified\r")
+
+    completed = run_counter(
+        "--pattern",
+        "## Verified",
+        "--format",
+        "json",
+        str(corpus),
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    payload = json.loads(completed.stdout)
+    assert payload["count"] == 1
+    assert [match["line"] for match in payload["matches"]] == [1]
+
+
 def test_utf8_bom_is_normalized(tmp_path: Path) -> None:
     corpus = tmp_path / "bom.md"
     corpus.write_bytes(b"\xef\xbb\xbf## Verified\n## Verified\n")

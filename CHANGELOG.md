@@ -8,6 +8,21 @@ A release is a snapshot of the whole collection. Skills are distributed
 together but installed independently, so the exact tool versions each release
 pins are also recorded in [Pinned tool versions](#pinned-tool-versions).
 
+## [0.4.6] - 2026-10-31
+
+### Added
+
+- Add [dispatch-brief](skills/dispatch-brief/README.md), a delegation brief template and side-effect lint with Codex skill-picker metadata.
+- Price GPT-6.1 Terra usage at published OpenAI rates in [usage-cost](skills/usage-cost/SKILL.md#rate-table).
+
+### Fixed
+
+- Stop counting a final line that ends in a bare carriage return as a full-line match in [verify-numbers](skills/verify-numbers/SKILL.md#limits).
+- Keep every receipt when a command prints non-UTF-8 output, escaping the undecodable bytes, in [proof-before-done](skills/proof-before-done/SKILL.md#execute-and-decide).
+- Report a command containing a NUL byte as `UNVERIFIED` in [proof-before-done](skills/proof-before-done/SKILL.md#execute-and-decide).
+- Keep claims with line separators or lone surrogates on one receipt line in [proof-before-done](skills/proof-before-done/SKILL.md#execute-and-decide).
+- Keep dollar amounts in the [usage-cost](skills/usage-cost/SKILL.md) instructions intact when the skill is invoked with arguments.
+
 ## [0.4.5] - 2026-10-15
 
 ### Added
@@ -165,6 +180,7 @@ reading every entry above.
 
 | Release | Skill | Pinned distribution |
 | --- | --- | --- |
+| 0.4.6 | `memory-lint` | `memory-lint==0.1.0` |
 | 0.4.5 | `memory-lint` | `memory-lint==0.1.0` |
 | 0.4.4 | `memory-lint` | `memory-lint==0.1.0` |
 | 0.4.3 | `memory-lint` | `memory-lint==0.1.0` |
@@ -175,6 +191,7 @@ reading every entry above.
 | 0.2.0 | `memory-lint` | `memory-lint==0.1.0` |
 | 0.1.0 | `memory-lint` | `memory-lint==0.1.0` |
 
+[0.4.6]: https://github.com/kiloloop/kiloloop-skills/compare/v0.4.5...v0.4.6
 [0.4.5]: https://github.com/kiloloop/kiloloop-skills/compare/v0.4.4...v0.4.5
 [0.4.4]: https://github.com/kiloloop/kiloloop-skills/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/kiloloop/kiloloop-skills/compare/v0.4.2...v0.4.3

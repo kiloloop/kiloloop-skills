@@ -9,6 +9,20 @@ means independently installable: a skill either vendors its implementation or
 wraps an exact version of a published package declared through `requires:`.
 Neither form may depend on an unpublished repository or a floating dependency.
 
+## Install
+
+Copy one skill's directory into your agent's skills directory:
+
+```bash
+git clone https://github.com/kiloloop/kiloloop-skills.git
+mkdir -p ~/.claude/skills && cp -R kiloloop-skills/skills/verify-numbers ~/.claude/skills/  # Claude Code
+mkdir -p ~/.agents/skills && cp -R kiloloop-skills/skills/verify-numbers ~/.agents/skills/  # Codex
+```
+
+Replace `verify-numbers` with any skill listed below. A wrapper-form skill
+such as `memory-lint` also needs its pinned package: run the
+`python -m pip install` command in its `SKILL.md`.
+
 ## Development model
 
 Skill behavior, packaging, and runtime-adapter changes originate here. When a
@@ -47,3 +61,6 @@ versions, and runs the declared wrapper smoke command plus its fixtures.
 - [`render-check`](skills/render-check/README.md) — review the surface a reader
   actually sees, with screenshots and measured layout across viewports,
   themes, and states, before reporting it done.
+- [`dispatch-brief`](skills/dispatch-brief/README.md) — write a goal-only
+  brief before handing work to another agent, and lint it for missing
+  sections and side effects it asks for but never declares.

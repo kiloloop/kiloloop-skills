@@ -355,3 +355,114 @@ def test_path_with_embedded_nul_is_unverified_for_both_static_predicates(
     assert "could_not_stat=" in receipts[0]
     assert receipts[1].startswith('UNVERIFIED · claim="marker is present"')
     assert "could_not_read=" in receipts[1]
+
+
+def test_non_utf8_output_is_escaped_and_earlier_receipts_survive(
+    tmp_path: Path,
+) -> None:
+    claims_file = tmp_path / "claims.json"
+    claims_file.write_text(
+        json.dumps(
+            {
+                "claims": [
+                    {
+                        "claim": "earlier check passes",
+                        "type": "command_exit_zero",
+                        "command": [sys.executable, "-c", "print('prior')"],
+                    },
+                    {
+                        "claim": "binary output command exits 0",
+                        "type": "command_exit_zero",
+                        "command": [
+                            sys.executable,
+                            "-c",
+                            "import os; os.write(1, bytes([255]))",
+                        ],
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    completed = run_checker(claims_file)
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    receipts = completed.stdout.splitlines()
+    assert len(receipts) == 2
+    assert receipts[0].startswith('PASS · claim="earlier check passes"')
+    assert receipts[1].startswith('PASS · claim="binary output command exits 0"')
+    assert (
+        r'observed="stdout=<non-UTF-8 bytes shown as \\xNN> \\xff; stderr=<empty>"'
+        in receipts[1]
+    )
+
+
+def test_command_with_embedded_nul_is_unverified_not_a_crash(
+    tmp_path: Path,
+) -> None:
+    claims_file = tmp_path / "claims.json"
+    claims_file.write_text(
+        json.dumps(
+            {
+                "claims": [
+                    {
+                        "claim": "earlier check passes",
+                        "type": "command_exit_zero",
+                        "command": [sys.executable, "-c", "print('prior')"],
+                    },
+                    {
+                        "claim": "malformed command runs",
+                        "type": "command_exit_zero",
+                        "command": ["nul\u0000command"],
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    completed = run_checker(claims_file)
+
+    assert completed.returncode == 1, completed.stdout + completed.stderr
+    receipts = completed.stdout.splitlines()
+    assert len(receipts) == 2
+    assert receipts[0].startswith('PASS · claim="earlier check passes"')
+    assert receipts[1].startswith(
+        'UNVERIFIED · claim="malformed command runs"'
+        ' · command=EXEC ["nul\\u0000command"] · exit_code=N/A '
+    )
+    assert "could_not_execute=" in receipts[1]
+
+
+def test_line_separators_and_lone_surrogates_stay_escaped_on_one_line(
+    tmp_path: Path,
+) -> None:
+    claims_file = tmp_path / "claims.json"
+    claims_file.write_text(
+        json.dumps(
+            {
+                "claims": [
+                    {
+                        "claim": "first\u2028second",
+                        "type": "command_exit_zero",
+                        "command": [sys.executable, "-c", "print('ok')"],
+                    },
+                    {
+                        "claim": "bad\ud800claim",
+                        "type": "command_exit_zero",
+                        "command": [sys.executable, "-c", "print('ok')"],
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    completed = run_checker(claims_file)
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    receipts = completed.stdout.splitlines()
+    assert len(receipts) == 2
+    assert receipts[0].startswith('PASS · claim="first\\u2028second"')
+    assert receipts[1].startswith('PASS · claim="bad\\ud800claim"')

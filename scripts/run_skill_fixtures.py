@@ -22,6 +22,9 @@ EXACT_REQUIREMENT = re.compile(
     r"^(?P<name>[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)"
     r"==(?P<version>[A-Za-z0-9][A-Za-z0-9.!+_-]*)$"
 )
+# Claude Code replaces `$<digit>` in SKILL.md with a skill argument before the
+# model reads it, so text such as `$1.00` reaches the model rewritten.
+ARGUMENT_PLACEHOLDER = re.compile(r"\$[0-9]")
 
 
 @dataclass(frozen=True)
@@ -205,6 +208,12 @@ def validate_skill(skill: Path) -> tuple[list[str], list[Path], WrapperContract 
         errors.append(f"{skill.name}: missing SKILL.md")
     metadata, skill_text, frontmatter_errors = load_skill_frontmatter(skill)
     errors.extend(frontmatter_errors)
+    errors.extend(
+        f"{skill.name}: SKILL.md line {line_number} puts `$` before a digit, "
+        "which skill-argument substitution overwrites; write the amount another way"
+        for line_number, line in enumerate(skill_text.splitlines(), start=1)
+        if ARGUMENT_PLACEHOLDER.search(line)
+    )
     wrapper_contract, wrapper_errors = parse_wrapper_contract(
         skill, metadata, skill_text
     )

@@ -20,10 +20,12 @@ class LineMatch:
 
 
 def _split_lf_lines(text: str) -> list[str]:
-    lines = text.split("\n")
-    if lines and lines[-1] == "":
-        lines.pop()
-    return [line[:-1] if line.endswith("\r") else line for line in lines]
+    *terminated, final = text.split("\n")
+    lines = [line[:-1] if line.endswith("\r") else line for line in terminated]
+    # A CR is a line ending only before LF; an unterminated final segment keeps it.
+    if final:
+        lines.append(final)
+    return lines
 
 
 def _parse_files(raw_paths: Sequence[str]) -> list[tuple[str, Path]]:

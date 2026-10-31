@@ -58,7 +58,9 @@ python scripts/proof_before_done.py path/to/claims.json
 
 Each receipt records the claim, the exact executed command or static predicate,
 its exit code when applicable, the observed value, an execution-time UTC
-timestamp, and `PASS`, `FAIL`, or `UNVERIFIED`.
+timestamp, and `PASS`, `FAIL`, or `UNVERIFIED`. Command output that is not
+valid UTF-8 starts with `<non-UTF-8 bytes shown as \xNN>`, and each
+undecodable byte appears as a `\xNN` escape.
 
 `FAIL` means a predicate executed and observed a false result, a nonzero exit,
 or a timeout. `UNVERIFIED` means the predicate was missing or unsupported, its

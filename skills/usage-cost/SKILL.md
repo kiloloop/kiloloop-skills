@@ -214,8 +214,8 @@ These are recorded settings, not proof of the actual served tier.
 SOURCE: [OpenAI Fast mode](https://developers.openai.com/api/docs/guides/fast-mode)
 and the [Astra model page](https://developers.openai.com/api/docs/models/gpt-6-astra),
 read 2026-09-21 UTC. Fast and priority are equivalent API tier names. Astra
-list rates per million are $10 input, $1 cached input, $12.50 cache writes and
-$50 output; Fast costs **2×** applicable API rates, independently of Codex
+list rates per million are USD 10 input, USD 1 cached input, USD 12.50 cache
+writes and USD 50 output; Fast costs **2×** applicable API rates, independently of Codex
 credit consumption. The table stores Fast in the model's `speeds.fast` entry.
 Above 272,000 input tokens, Astra's `long_context` rule multiplies input/cache
 prices by 2 and output by 1.5 before the Fast premium. This calculation treats
@@ -316,8 +316,8 @@ The table's `cache_multipliers` are the default:
 
 A model whose published cache pricing departs from the default carries its own
 `cache_multipliers` block, which overrides only the tiers it names. Claude
-Fable 5.1 and Claude Mythos 5.1 bill cache reads at 0.025x input ($0.25 per
-million against $10 input), so their entries carry `{"read": "0.025"}` and
+Fable 5.1 and Claude Mythos 5.1 bill cache reads at 0.025x input (USD 0.25
+per million against USD 10 input), so their entries carry `{"read": "0.025"}` and
 keep the default write multipliers. A malformed override is a rate-table error
 (exit `2`), not a model that quietly prices at the default.
 
@@ -349,7 +349,7 @@ total.
 is keyed by tool name; each entry names its `unit` (only `per_request` is
 supported, stated rather than assumed so a future per-hour tool cannot be read
 as per-call), its `rate` as a decimal string, and a `display_name`. Web search
-is published as $10 per 1,000 searches, stored as `"0.01"` per call, with the
+is published as USD 10 per 1,000 searches, stored as `"0.01"` per call, with the
 block carrying its own `source` and `source_checked` because it is verified
 against the pricing page independently of the model rows. A malformed entry is
 a rate-table error (exit `2`), for the same reason a malformed model row is: a
@@ -367,13 +367,15 @@ sitting on one line would otherwise read as the price of those tokens.
 
 ### Codex model price coverage
 
-The table includes GPT-6.1 Sol, GPT-5.6 Sol/Terra/Luna (and the documented
-`gpt-5.6` Sol alias), plus the API-key models still named in the
+The table includes GPT-6.1 Sol and Terra, GPT-5.6 Sol/Terra/Luna (and the
+documented `gpt-5.6` Sol alias), plus the API-key models still named in the
 [Codex model guide](https://learn.chatgpt.com/docs/models): GPT-5.5, GPT-5.4,
-GPT-5.4 Mini, GPT-5.2 and GPT-5.3 Codex. Each added row records its official
-model-page source and a pinned OpenAI catalog cross-check. GPT-6.1 Sol reads
-cache at 0.05× input; GPT-5.5 and earlier charge no cache-write premium, so
-separately recorded write tokens use 1× input rather than the table default.
+GPT-5.4 Mini, GPT-5.2 and GPT-5.3 Codex. These rows record their official
+model-page sources. GPT-6.1 Terra is cross-checked against OpenAI's pricing
+page; the other rows in this list also carry a pinned OpenAI catalog
+cross-check. GPT-6.1 Sol and Terra read cache at 0.05× input; GPT-5.5 and
+earlier charge no cache-write premium, so separately recorded write tokens
+use 1× input rather than the table default.
 
 GPT-5.5 and GPT-5.4 have Standard long-context prices but no published
 long-context Fast price. Their Fast rows remain `UNPRICED`: the current table
@@ -492,18 +494,18 @@ The values below are placeholders chosen to show the shape. Substitute what the
 run actually printed; never copy these figures through.
 
 ```markdown
-**Today: $12.34** · 10.0M tokens · 100 requests
+**Today: $X.XX** · 10.0M tokens · 100 requests
 
 | Period | Tokens | Cost |
 | --- | --- | --- |
-| Today (YYYY-MM-DD) | 10.0M | $12.34 |
-| Yesterday (YYYY-MM-DD) | 20.0M | $24.68 |
-| This week (from YYYY-MM-DD) | 100.0M | $123.40 |
+| Today (YYYY-MM-DD) | 10.0M | $X.XX |
+| Yesterday (YYYY-MM-DD) | 20.0M | $X.XX |
+| This week (from YYYY-MM-DD) | 100.0M | $X.XX |
 
 | Model | Requests | Tokens | Cost |
 | --- | --- | --- | --- |
-| <model> | 60 | 7.0M | $9.00 |
-| <model> | 40 | 3.0M | $3.34 |
+| <model> | 60 | 7.0M | $X.XX |
+| <model> | 40 | 3.0M | $X.XX |
 
 At list rates, not a bill — a subscription charges a flat fee and prices no
 individual request. Rate table <rate_table_version>, days bucketed in <timezone>,

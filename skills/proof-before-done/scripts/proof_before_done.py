@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import stat
 import subprocess
 import sys
@@ -17,6 +18,17 @@ from typing import Any, Mapping, Sequence
 EXIT_VERIFIED = 0
 EXIT_CLAIM_NOT_VERIFIED = 1
 EXIT_INPUT_ERROR = 2
+
+# JSON leaves these unescaped, but they break a receipt line or cannot be encoded.
+_UNSAFE_IN_RECEIPT = re.compile("[\x85\u2028\u2029\ud800-\udfff]")
+NON_UTF8_MARKER = "<non-UTF-8 bytes shown as \\xNN>"
+
+
+def _json(value: object, **options: Any) -> str:
+    encoded = json.dumps(value, ensure_ascii=False, **options)
+    return _UNSAFE_IN_RECEIPT.sub(
+        lambda match: f"\\u{ord(match.group()):04x}", encoded
+    )
 
 
 @dataclass(frozen=True)
@@ -31,10 +43,10 @@ class Receipt:
     def render(self) -> str:
         return (
             f"{self.status}"
-            f" · claim={json.dumps(self.claim, ensure_ascii=False)}"
+            f" · claim={_json(self.claim)}"
             f" · command={self.command}"
             f" · exit_code={self.exit_code}"
-            f" · observed={json.dumps(self.observed, ensure_ascii=False)}"
+            f" · observed={_json(self.observed)}"
             f" · timestamp={self.timestamp}"
         )
 
@@ -48,21 +60,24 @@ def _timestamp() -> str:
 
 
 def _command_text(arguments: Sequence[str]) -> str:
-    return "EXEC " + json.dumps(list(arguments), ensure_ascii=False, separators=(",", ":"))
+    return "EXEC " + _json(list(arguments), separators=(",", ":"))
 
 
 def _static_text(name: str, **arguments: str) -> str:
     encoded = ",".join(
-        f"{key}={json.dumps(value, ensure_ascii=False)}"
+        f"{key}={_json(value)}"
         for key, value in arguments.items()
     )
     return f"STATIC {name}({encoded})"
 
 
-def _flatten_output(value: str) -> str:
+def _flatten_output(value: bytes | None) -> str:
     if not value:
         return "<empty>"
-    return value
+    try:
+        return value.decode("utf-8")
+    except UnicodeDecodeError:
+        return f"{NON_UTF8_MARKER} {value.decode('utf-8', 'backslashreplace')}"
 
 
 def _unverified(
@@ -101,20 +116,18 @@ def _run_command(
         completed = subprocess.run(
             arguments,
             cwd=cwd,
-            text=True,
             capture_output=True,
             check=False,
             timeout=timeout_seconds,
         )
     except subprocess.TimeoutExpired as error:
-        stdout = error.stdout.decode() if isinstance(error.stdout, bytes) else error.stdout or ""
-        stderr = error.stderr.decode() if isinstance(error.stderr, bytes) else error.stderr or ""
         observed = (
             f"timed_out_after={timeout_seconds:g}s; "
-            f"stdout={_flatten_output(stdout)}; stderr={_flatten_output(stderr)}"
+            f"stdout={_flatten_output(error.stdout)}; "
+            f"stderr={_flatten_output(error.stderr)}"
         )
         return Receipt("FAIL", claim, command, "N/A", observed, _timestamp())
-    except OSError as error:
+    except (OSError, ValueError) as error:
         return _unverified(
             claim,
             f"could_not_execute={error}",
@@ -328,21 +341,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_INPUT_ERROR
 
     base = claims_file.resolve().parent
-    receipts = [
-        _evaluate_claim(
+    all_verified = True
+    for item in claims:
+        receipt = _evaluate_claim(
             item,
             base=base,
             timeout_seconds=args.timeout_seconds,
         )
-        for item in claims
-    ]
-    for receipt in receipts:
-        print(receipt.render())
-    return (
-        EXIT_VERIFIED
-        if all(receipt.status == "PASS" for receipt in receipts)
-        else EXIT_CLAIM_NOT_VERIFIED
-    )
+        # Print each receipt as it is produced so a later failure cannot discard it.
+        print(receipt.render(), flush=True)
+        all_verified = all_verified and receipt.status == "PASS"
+    return EXIT_VERIFIED if all_verified else EXIT_CLAIM_NOT_VERIFIED
 
 
 if __name__ == "__main__":

@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import json
 import os
+import py_compile
+import shutil
 import subprocess
+import zipfile
 from collections.abc import Mapping
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 from types import ModuleType
 
+import pytest
 import yaml
 
 CORE_DEFECT_CODES = {
@@ -56,8 +60,10 @@ def materialize_fixture_snapshot(root: Path) -> None:
 def run_wrapper(
     *arguments: str,
     environment_overrides: Mapping[str, str] | None = None,
+    cwd: Path | None = None,
+    python: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    clean_python = Path(os.environ["SKILL_CLEAN_PYTHON"])
+    clean_python = Path(os.environ["SKILL_CLEAN_PYTHON"]) if python is None else python
     skill_root = Path(os.environ["SKILL_ROOT"])
     wrapper = skill_root / "scripts" / "memory_lint_wrapper.py"
     environment = os.environ.copy()
@@ -65,7 +71,7 @@ def run_wrapper(
         environment.update(environment_overrides)
     return subprocess.run(
         [str(clean_python), str(wrapper), *arguments],
-        cwd=skill_root,
+        cwd=skill_root if cwd is None else cwd,
         env=environment,
         text=True,
         capture_output=True,
@@ -165,21 +171,154 @@ def test_signal_termination_is_an_execution_error(monkeypatch, capsys) -> None:
     assert "delegated CLI terminated by signal 15" in captured.err
 
 
-def test_broken_import_is_a_dependency_error(tmp_path: Path) -> None:
-    broken_root = tmp_path / "broken-import"
-    broken_package = broken_root / "memory_lint"
-    broken_package.mkdir(parents=True)
-    (broken_package / "__init__.py").write_text(
-        'raise RuntimeError("synthetic broken install")\n',
+def _purelib(python: Path) -> Path:
+    completed = subprocess.run(
+        [str(python), "-c", "import sysconfig; print(sysconfig.get_paths()['purelib'])"],
+        text=True, capture_output=True, check=True,
+    )
+    return Path(completed.stdout.strip())
+
+
+def test_a_broken_installation_is_a_dependency_error(tmp_path: Path) -> None:
+    """An installed release whose import fails exits 2, and nothing is delegated.
+
+    The clean environment's installation is shared by every fixture and stays
+    untouched: the release is copied into a private environment built from the
+    same interpreter, and only that copy is broken. The copy's package records
+    each import, so a delegated run would leave a second line.
+    """
+    clean_python = Path(os.environ["SKILL_CLEAN_PYTHON"])
+    environment = tmp_path / "broken-env"
+    subprocess.run(
+        [str(clean_python), "-m", "venv", "--without-pip", str(environment)],
+        check=True, capture_output=True,
+    )
+    broken_python = environment / "bin" / "python"
+    source, target = _purelib(clean_python), _purelib(broken_python)
+    shutil.copytree(source / "memory_lint", target / "memory_lint")
+    (metadata,) = source.glob("memory_lint-0.1.0.dist-info")
+    shutil.copytree(metadata, target / metadata.name)
+    imports = tmp_path / "imports"
+    (target / "memory_lint" / "__init__.py").write_text(
+        f"open({str(imports)!r}, 'a').write('import\\n')\n"
+        'raise RuntimeError("synthetic broken installation")\n',
         encoding="utf-8",
     )
 
+    completed = run_wrapper("--version", cwd=tmp_path, python=broken_python)
+
+    assert completed.returncode == 2, completed.stdout + completed.stderr
+    assert "required module memory_lint failed its import probe" in completed.stderr
+    assert "RuntimeError: synthetic broken installation" in completed.stderr
+    assert "python -m pip install memory-lint==0.1.0" in completed.stderr
+    # One import, by the probe; the delegated command never ran.
+    assert imports.read_text(encoding="utf-8") == "import\n"
+
+
+SHADOW_METADATA = "Metadata-Version: 2.1\nName: memory-lint\nVersion: 0.1.0\n"
+
+
+def _write_shadow(root: Path, form: str, sentinel: Path) -> None:
+    """A copy of memory_lint whose every code path records that it ran."""
+    root.mkdir(parents=True, exist_ok=True)
+
+    def records(where: str) -> str:
+        return f"open({str(sentinel)!r}, 'a').write({where!r} + '\\n')\n"
+
+    if form == "module":
+        (root / "memory_lint.py").write_text(
+            records("memory_lint.py") + 'print("SHADOW RAN")\n', encoding="utf-8"
+        )
+        return
+    if form == "sourceless":
+        source = root.parent / "memory_lint_source.py"
+        source.write_text(records("memory_lint.pyc") + 'print("SHADOW RAN")\n', encoding="utf-8")
+        py_compile.compile(str(source), cfile=str(root / "memory_lint.pyc"), doraise=True)
+        source.unlink()
+        return
+    package = root / "memory_lint"
+    package.mkdir()
+    (package / "__init__.py").write_text(
+        '__version__ = "0.1.0"\n' + records("__init__"), encoding="utf-8"
+    )
+    (package / "__main__.py").write_text(
+        records("__main__") + 'print("SHADOW RAN")\n', encoding="utf-8"
+    )
+    if form == "package+egg-info":
+        (root / "memory_lint.egg-info").mkdir()
+        (root / "memory_lint.egg-info" / "PKG-INFO").write_text(
+            SHADOW_METADATA, encoding="utf-8"
+        )
+    elif form == "package+dist-info":
+        (root / "memory_lint-0.1.0.dist-info").mkdir()
+        (root / "memory_lint-0.1.0.dist-info" / "METADATA").write_text(
+            SHADOW_METADATA, encoding="utf-8"
+        )
+
+
+@pytest.mark.parametrize(
+    "form", ["package", "package+egg-info", "package+dist-info", "module", "sourceless"]
+)
+@pytest.mark.parametrize("shadow_via", ["PYTHONPATH", "working directory"])
+def test_a_shadowing_memory_lint_is_refused_before_any_of_it_runs(
+    tmp_path: Path, shadow_via: str, form: str
+) -> None:
+    """A copy ahead of the installation is refused, and none of its code runs.
+
+    Matching build metadata beside the copy, as in a source checkout, must not
+    make it pass for the installation.
+    """
+    shadow_root = tmp_path / "shadow"
+    sentinel = tmp_path / "shadow-code-ran"
+    _write_shadow(shadow_root, form, sentinel)
+
+    if shadow_via == "PYTHONPATH":
+        completed = run_wrapper(
+            "--version",
+            environment_overrides={"PYTHONPATH": str(shadow_root)},
+            cwd=tmp_path,
+        )
+    else:
+        completed = run_wrapper("--version", cwd=shadow_root)
+
+    assert completed.returncode == 2, completed.stdout + completed.stderr
+    assert not sentinel.exists(), sentinel.read_text(encoding="utf-8")
+    assert "SHADOW RAN" not in completed.stdout
+    assert "memory_lint resolves to" in completed.stderr
+    assert "not the installed memory-lint==0.1.0" in completed.stderr
+    assert "python -m pip install memory-lint==0.1.0" in completed.stderr
+
+
+def test_a_zipped_shadow_on_pythonpath_is_refused_before_any_of_it_runs(
+    tmp_path: Path,
+) -> None:
+    sentinel = tmp_path / "shadow-code-ran"
+    archive = tmp_path / "shadow.zip"
+    record = f"open({str(sentinel)!r}, 'a').write('zip\\n')\n"
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("memory_lint/__init__.py", record)
+        bundle.writestr("memory_lint/__main__.py", record + 'print("SHADOW RAN")\n')
+        bundle.writestr("memory_lint-0.1.0.dist-info/METADATA", SHADOW_METADATA)
+
     completed = run_wrapper(
-        "--version",
-        environment_overrides={"PYTHONPATH": str(broken_root)},
+        "--version", environment_overrides={"PYTHONPATH": str(archive)}, cwd=tmp_path
     )
 
-    assert completed.returncode == 2
-    assert "required module memory_lint failed its import probe" in completed.stderr
-    assert "RuntimeError: synthetic broken install" in completed.stderr
-    assert "python -m pip install memory-lint==0.1.0" in completed.stderr
+    assert completed.returncode == 2, completed.stdout + completed.stderr
+    assert not sentinel.exists()
+    assert "memory_lint resolves to" in completed.stderr
+
+
+def test_a_directory_that_does_not_shadow_the_installation_is_not_refused(
+    tmp_path: Path,
+) -> None:
+    """A `memory_lint` directory without `__init__.py` is at most a namespace
+    portion, and an installed regular package takes precedence over it, so the
+    delegated command still runs the pinned release."""
+    (tmp_path / "memory_lint").mkdir()
+    (tmp_path / "memory_lint" / "notes.txt").write_text("data\n", encoding="utf-8")
+
+    completed = run_wrapper("--version", cwd=tmp_path)
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "0.1.0" in completed.stdout

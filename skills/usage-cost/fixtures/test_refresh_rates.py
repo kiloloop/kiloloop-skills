@@ -391,6 +391,400 @@ def test_malformed_catalog_entries_are_errors_not_guesses(tmp_path: Path) -> Non
     assert parsed["claude-empty-modes"].fast_input is None
 
 
+# Schema-2 files. The shapes follow real models.dev provider files (an
+# Anthropic model with a fast mode, an OpenAI model whose fast mode runs on the
+# priority tier, an OpenAI model whose fast mode carries its own [cost]); the
+# names and some prices are synthetic.
+V2_FAST_BY_MULTIPLIER = """schema = 2
+name = "Claude V2"
+
+[cost.text.input]
+price = 4
+cache = { read = 0.2, write = { "5m" = 5, "1h" = 8 } }
+
+[[cost.text.input.overrides]]
+when = { context = { gt = 200_000 } }
+price = 8
+
+[cost.text.output]
+price = 20
+
+[cost.web_search]
+price = 10
+
+[[cost.multipliers]]
+when = { service_tier = { equals = "fast" } }
+factor = { text = 2 }
+
+[[cost.multipliers]]
+when = { region = { equals = "us" } }
+factor = { text = 1.1 }
+
+[experimental.modes.fast]
+body = { speed = "fast" }
+"""
+
+V2_FAST_ON_ANOTHER_TIER = """schema = 2
+name = "GPT V2"
+
+[cost.text.input]
+price = 10
+cache = { read = 1, write = { "12h" = 25, "30m" = 12.5 } }
+
+[cost.text.output]
+price = 50
+
+[[cost.multipliers]]
+when = { service_tier = { equals = "priority" } }
+factor = { text = 2 }
+
+[[cost.multipliers]]
+when = { service_tier = { equals = "ultrafast" } }
+factor = { text = 6 }
+
+[[cost.multipliers]]
+when = { service_tier = { equals = "flex" } }
+factor = { text = 0.5 }
+
+[experimental.modes.fast]
+service_tier = "priority"
+body = { service_tier = "priority" }
+"""
+
+V2_FAST_WITH_OWN_COST = """schema = 2
+name = "o-mini V2"
+
+[cost.text.input]
+price = 1.1
+cache = { read = 0.275 }
+
+[cost.text.output]
+price = 4.4
+
+[[cost.multipliers]]
+when = { service_tier = { equals = "priority" } }
+factor = 9
+
+[experimental.modes.fast]
+service_tier = "priority"
+
+[experimental.modes.fast.cost.text.input]
+price = 2
+
+[experimental.modes.fast.cost.text.output]
+price = 8
+"""
+
+
+def _v2(multipliers: str = "", modes: str = "[experimental.modes.fast]\n", cache: str = "") -> str:
+    """A schema-2 file at $1 / $5 with the given multipliers, modes and cache."""
+    return (
+        'schema = 2\n[cost.text.input]\nprice = 1\n'
+        + cache
+        + "[cost.text.output]\nprice = 5\n"
+        + multipliers
+        + modes
+    )
+
+
+def test_schema_2_entries_map_onto_the_fields_schema_1_carried(tmp_path: Path) -> None:
+    """The catalog moved to schema 2 with no change in what the table compares.
+
+    Base prices come from [cost.text.input] and [cost.text.output]; the
+    compared cache write is the shortest-lived tier, which is what a schema-1
+    file's single `cache_write` always was; fast mode is priced by its own
+    [cost] or by every multiplier on the service tier it runs on. Multipliers
+    that condition on anything else, and long-context overrides, are not read.
+    """
+    catalog = _write_catalog(
+        tmp_path / "catalog",
+        {
+            "claude-v2": V2_FAST_BY_MULTIPLIER,
+            "gpt-v2": V2_FAST_ON_ANOTHER_TIER,
+            "o-mini-v2": V2_FAST_WITH_OWN_COST,
+            "claude-v1": _toml(5, 25, cache_read=0.5, cache_write=6.25),
+        },
+    )
+    parsed, unpriced = refresh_rates.load_catalog_from_dir(catalog, "anthropic")
+    assert unpriced == []
+
+    claude = parsed["claude-v2"]
+    assert (claude.display_name, claude.input, claude.output) == ("Claude V2", Decimal("4"), Decimal("20"))
+    assert claude.cache_read == Decimal("0.2")
+    assert claude.cache_write == Decimal("5")  # 5m, not 1h
+    # The fast tier doubles text; the US-region multiplier and the >200K override do not apply.
+    assert (claude.fast_input, claude.fast_output) == (Decimal("8"), Decimal("40"))
+
+    gpt = parsed["gpt-v2"]
+    assert gpt.cache_write == Decimal("12.5")  # 30m, not 12h, whichever is written first
+    # The mode names its tier; only the priority multiplier prices it.
+    assert (gpt.fast_input, gpt.fast_output) == (Decimal("20"), Decimal("100"))
+
+    # A mode's own [cost] replaces the base prices and outranks any multiplier.
+    own = parsed["o-mini-v2"]
+    assert (own.fast_input, own.fast_output) == (Decimal("2"), Decimal("8"))
+    assert own.cache_read == Decimal("0.275")
+    assert own.cache_write is None
+
+    # A schema-1 file in the same directory still reads the flat layout.
+    assert (parsed["claude-v1"].input, parsed["claude-v1"].cache_write) == (Decimal("5"), Decimal("6.25"))
+
+
+def test_schema_2_fast_multipliers_follow_the_factor_grammar(tmp_path: Path) -> None:
+    """Each factor and condition shape the schema allows, against $1 / $5 base prices."""
+    fast_tier = 'when = { service_tier = { equals = "fast" } }\n'
+    cases = {
+        # A bare number scales every price, text included.
+        "bare-number": (f"[[cost.multipliers]]\n{fast_tier}factor = 3\n", (3, 15)),
+        # A table scales only what it names; text left out stays at the base price.
+        "names-another-category": (f"[[cost.multipliers]]\n{fast_tier}factor = {{ audio = 4 }}\n", (1, 5)),
+        "splits-text-by-side": (
+            f"[[cost.multipliers]]\n{fast_tier}factor = {{ text = {{ input = 2, output = 3 }} }}\n",
+            (2, 15),
+        ),
+        "names-one-side-only": (
+            f"[[cost.multipliers]]\n{fast_tier}factor = {{ text = {{ input = 2 }} }}\n",
+            (2, 5),
+        ),
+        # Every matching multiplier applies, so two on the tier compound.
+        "two-on-the-tier": (
+            f"[[cost.multipliers]]\n{fast_tier}factor = {{ text = 2 }}\n"
+            f"[[cost.multipliers]]\n{fast_tier}factor = 1.5\n",
+            (3, 15),
+        ),
+        "tier-in-a-list": (
+            '[[cost.multipliers]]\nwhen = { service_tier = { in = ["priority", "fast"] } }\nfactor = 2\n',
+            (2, 10),
+        ),
+        # A condition on more than the tier does not price the list rate.
+        "tier-and-region": (
+            '[[cost.multipliers]]\nwhen = { service_tier = { equals = "fast" }, region = { equals = "us" } }\n'
+            "factor = 2\n",
+            None,
+        ),
+        # A zero factor is a factor like any other; it is never read as "unset".
+        "zero-then-two": (
+            f"[[cost.multipliers]]\n{fast_tier}factor = 0\n[[cost.multipliers]]\n{fast_tier}factor = 2\n",
+            (0, 0),
+        ),
+        "two-then-zero": (
+            f"[[cost.multipliers]]\n{fast_tier}factor = 2\n[[cost.multipliers]]\n{fast_tier}factor = 0\n",
+            (0, 0),
+        ),
+        "another-tier": ('[[cost.multipliers]]\nwhen = { service_tier = { equals = "flex" } }\nfactor = 0.5\n', None),
+        "no-multipliers": ("", None),
+    }
+    for label, (multipliers, expected) in cases.items():
+        catalog = _write_catalog(tmp_path / label, {"claude-x": _v2(multipliers)})
+        parsed, _ = refresh_rates.load_catalog_from_dir(catalog, "anthropic")
+        entry = parsed["claude-x"]
+        if expected is None:
+            # A mode nothing prices states no fast rate.
+            assert (entry.fast_input, entry.fast_output) == (None, None), label
+        else:
+            assert (entry.fast_input, entry.fast_output) == tuple(Decimal(v) for v in expected), label
+
+    # Cache writes: one price for every lifetime, or a table of lifetimes.
+    for cache, expected_write in (
+        ('cache = { read = 0.1, write = 1.25 }\n', Decimal("1.25")),
+        ('cache = { write = { "1h" = 2, "90s" = 1.1, "1d" = 3 } }\n', Decimal("1.1")),
+        ("cache = { read = 0.1 }\n", None),
+    ):
+        catalog = _write_catalog(tmp_path / f"cache-{expected_write}", {"claude-x": _v2(cache=cache)})
+        parsed, _ = refresh_rates.load_catalog_from_dir(catalog, "anthropic")
+        assert parsed["claude-x"].cache_write == expected_write, cache
+
+
+def test_schema_2_entries_without_a_text_price_are_skipped(tmp_path: Path) -> None:
+    """Audio and image models price no text token, so the table has no row to compare."""
+    catalog = _write_catalog(
+        tmp_path / "catalog",
+        {
+            "claude-x": _v2(),
+            # Its base model is not in the catalog: a skipped entry's name is
+            # never resolved, so the dangling reference cannot stop the run.
+            "claude-speech": (
+                'schema = 2\nbase_model = "anthropic/absent"\n'
+                "[cost.audio.input]\nprice = 6\n[cost.audio.output]\nprice = 24\n"
+            ),
+            "claude-tts": "schema = 2\n[cost.text.input]\nprice = 15\n",
+            "claude-image": "schema = 2\n[cost.image.input]\nprice = 5\n",
+        },
+    )
+    row = {"display_name": "Claude X", "input": "1.00", "output": "5.00"}
+    rates = tmp_path / "rates.json"
+    rates.write_text(json.dumps(_table(**{"claude-x": row})), encoding="utf-8")
+
+    completed = run("--catalog-dir", str(catalog), "--rates", str(rates))
+    assert completed.returncode == refresh_rates.EXIT_AGREES, completed.stderr + completed.stdout
+    assert (
+        "no text-token price upstream, skipped: claude-image, claude-speech, claude-tts"
+        in completed.stdout
+    )
+
+
+# Every unit the schema-2 grammar allows besides tokens (models.dev CostUnitV2).
+NON_TOKEN_UNITS = ("character", "image", "megapixel", "second", "minute")
+
+
+def test_schema_2_prices_in_other_units_are_refused_never_written(tmp_path: Path) -> None:
+    """A text price per character, second or other unit is not a per-token price.
+
+    Copied into this per-million-token table it would be a confident wrong
+    figure, so a priced text side with any unit but `token` exits 2 before the
+    table is touched — on either side, in the base cost or in a fast mode's own
+    cost. An omitted unit, or an explicit `token`, is a token price.
+    """
+    rates = tmp_path / "rates.json"
+    rates.write_text(json.dumps(_table()), encoding="utf-8")
+    before = rates.read_bytes()
+
+    def base(input_unit: str = "", output_unit: str = "") -> str:
+        return (
+            'schema = 2\nname = "Example Text Model"\n'
+            f"[cost.text.input]\n{input_unit}price = 1\n"
+            f"[cost.text.output]\n{output_unit}price = 5\n"
+        )
+
+    def mode(input_unit: str = "", output_unit: str = "") -> str:
+        return (
+            base()
+            + f"[experimental.modes.fast.cost.text.input]\n{input_unit}price = 2\n"
+            + f"[experimental.modes.fast.cost.text.output]\n{output_unit}price = 10\n"
+        )
+
+    refused = {"reviewer-repro": base('unit = "character"\n', 'unit = "second"\n')}
+    for unit in NON_TOKEN_UNITS:
+        line = f'unit = "{unit}"\n'
+        refused[f"base-input-{unit}"] = base(input_unit=line)
+        refused[f"base-output-{unit}"] = base(output_unit=line)
+        refused[f"mode-input-{unit}"] = mode(input_unit=line)
+        refused[f"mode-output-{unit}"] = mode(output_unit=line)
+    refused["unit-is-a-number"] = base(input_unit="unit = 5\n")
+
+    for label, text in refused.items():
+        catalog = _write_catalog(tmp_path / label, {"example-text-model": text})
+        completed = run(
+            "--catalog-dir", str(catalog), "--rates", str(rates),
+            "--write", "--today", "2026-11-11", "--commit", SYNTHETIC_COMMIT,
+        )
+        assert_refused(completed, label)
+        assert "example-text-model" in completed.stderr and ".unit is " in completed.stderr, label
+        assert rates.read_bytes() == before, label
+
+    # Controls: an omitted unit and an explicit `token` are token prices, in
+    # both places, and a write adds the row.
+    for label, text in {
+        "omitted": mode(),
+        "explicit-token": mode('unit = "token"\n', 'unit = "token"\n').replace(
+            "price = 1\n", 'unit = "token"\nprice = 1\n'
+        ),
+    }.items():
+        catalog = _write_catalog(tmp_path / f"accepted-{label}", {"example-text-model": text})
+        parsed, _ = refresh_rates.load_catalog_from_dir(catalog, "anthropic")
+        entry = parsed["example-text-model"]
+        assert (entry.input, entry.output, entry.fast_input, entry.fast_output) == (
+            Decimal("1"), Decimal("5"), Decimal("2"), Decimal("10")
+        ), label
+
+    # A side with no price is skipped before its unit is read: a text-to-speech
+    # model priced per input character with no text output (OpenAI's tts-1
+    # shape) is listed as skipped, not refused, so a real catalog still runs.
+    catalog = _write_catalog(
+        tmp_path / "tts",
+        {
+            "claude-x": _v2(),
+            "example-tts": 'schema = 2\n[cost.text.input]\nunit = "character"\nprice = 15\n',
+        },
+    )
+    rates.write_text(
+        json.dumps(_table(**{"claude-x": {"display_name": "Claude X", "input": "1.00", "output": "5.00"}})),
+        encoding="utf-8",
+    )
+    completed = run("--catalog-dir", str(catalog), "--rates", str(rates))
+    assert completed.returncode == refresh_rates.EXIT_AGREES, completed.stderr + completed.stdout
+    assert "no text-token price upstream, skipped: example-tts" in completed.stdout
+
+
+def test_a_schema_2_catalog_is_compared_and_merged_like_schema_1(tmp_path: Path) -> None:
+    """End to end: agreement, a reported change, and a write, on schema-2 input."""
+    catalog = _write_catalog(tmp_path / "catalog", {"claude-v2": V2_FAST_BY_MULTIPLIER})
+    row = {
+        "display_name": "Claude V2",
+        "input": "4.00",
+        "output": "20.00",
+        "cache_multipliers": {"read": "0.05"},
+        "speeds": {"fast": {"input": "8.00", "output": "40.00"}},
+    }
+    rates = tmp_path / "rates.json"
+    rates.write_text(json.dumps(_table(**{"claude-v2": row})), encoding="utf-8")
+
+    completed = run("--catalog-dir", str(catalog), "--rates", str(rates))
+    assert completed.returncode == refresh_rates.EXIT_AGREES, completed.stderr + completed.stdout
+    assert "every catalog row agrees with the table" in completed.stdout
+    assert "\n  note " not in completed.stdout
+
+    raised = _write_catalog(
+        tmp_path / "raised",
+        {"claude-v2": V2_FAST_BY_MULTIPLIER.replace("price = 20", "price = 25")},
+    )
+    completed = run("--catalog-dir", str(raised), "--rates", str(rates))
+    assert completed.returncode == refresh_rates.EXIT_DRIFT, completed.stderr + completed.stdout
+    assert "changed  claude-v2.output  20.00 -> 25.00" in completed.stdout
+    # The doubled fast output now differs from the table's, and is reported, not written.
+    assert "claude-v2: fast variant prices 8.00/40.00 in the table, 8.00/50.00 upstream" in completed.stdout
+
+    written = run(
+        "--catalog-dir", str(raised), "--rates", str(rates),
+        "--write", "--today", "2026-11-11", "--commit", SYNTHETIC_COMMIT,
+    )
+    assert written.returncode == refresh_rates.EXIT_AGREES, written.stderr
+    assert json.loads(rates.read_text())["models"]["claude-v2"]["output"] == "25.00"
+
+
+def test_malformed_schema_2_entries_are_errors_not_guesses(tmp_path: Path) -> None:
+    """The schema-2 grammar, enumerated the same way: every shape it cannot use exits 2."""
+    rates = SCRIPTS / "rates.json"
+    fast_tier = 'when = { service_tier = { equals = "fast" } }\n'
+    malformed = {
+        "unknown-schema": "schema = 3\n[cost]\ninput = 1\noutput = 5\n",
+        "schema-is-a-string": 'schema = "2"\n[cost]\ninput = 1\noutput = 5\n',
+        "schema-is-a-boolean": "schema = true\n[cost]\ninput = 1\noutput = 5\n",
+        "text-is-a-string": 'schema = 2\n[cost]\ntext = "cheap"\n',
+        "input-is-an-array": "schema = 2\n[cost.text]\ninput = [1]\noutput = { price = 5 }\n",
+        "string-price": 'schema = 2\n[cost.text.input]\nprice = "one"\n[cost.text.output]\nprice = 5\n',
+        "negative-price": "schema = 2\n[cost.text.input]\nprice = -1\n[cost.text.output]\nprice = 5\n",
+        "cache-is-a-number": _v2(cache="cache = 0.1\n"),
+        "string-cache-read": _v2(cache='cache = { read = "x" }\n'),
+        "empty-write-table": _v2(cache="cache = { write = {} }\n"),
+        "unreadable-lifetime": _v2(cache='cache = { write = { "5 minutes" = 1.25 } }\n'),
+        "string-write-price": _v2(cache='cache = { write = { "5m" = "x" } }\n'),
+        "multipliers-is-a-table": _v2("[cost.multipliers]\nfactor = 2\n"),
+        "multiplier-is-a-number": (
+            "schema = 2\n[cost]\nmultipliers = [2]\n[cost.text.input]\nprice = 1\n"
+            "[cost.text.output]\nprice = 5\n[experimental.modes.fast]\n"
+        ),
+        "multiplier-without-factor": _v2(f"[[cost.multipliers]]\n{fast_tier}"),
+        "multiplier-without-when": _v2("[[cost.multipliers]]\nfactor = 2\n"),
+        "negative-factor": _v2(f"[[cost.multipliers]]\n{fast_tier}factor = -2\n"),
+        "string-factor": _v2(f'[[cost.multipliers]]\n{fast_tier}factor = {{ text = "x" }}\n'),
+        "factor-finer-than-a-side": _v2(
+            f"[[cost.multipliers]]\n{fast_tier}factor = {{ text = {{ input = {{ cache = 2 }} }} }}\n"
+        ),
+        "mode-tier-is-a-number": _v2(modes="[experimental.modes.fast]\nservice_tier = 5\n"),
+        "mode-is-a-string": _v2(modes='[experimental.modes]\nfast = "x"\n'),
+        "mode-cost-is-a-number": _v2(modes="[experimental.modes.fast]\ncost = 1\n"),
+        "mode-cost-without-output": _v2(
+            modes="[experimental.modes.fast.cost.text.input]\nprice = 2\n"
+        ),
+    }
+    for label, text in malformed.items():
+        catalog = _write_catalog(tmp_path / label, {"claude-broken": text})
+        completed = run("--catalog-dir", str(catalog), "--rates", str(rates))
+        assert_refused(completed, label)
+        assert "claude-broken" in completed.stderr, label
+
+
 def test_an_entry_without_a_cost_table_is_skipped_unless_the_table_prices_it(
     tmp_path: Path,
 ) -> None:
@@ -411,7 +805,7 @@ def test_an_entry_without_a_cost_table_is_skipped_unless_the_table_prices_it(
 
     completed = run("--catalog-dir", str(catalog), "--rates", str(rates))
     assert completed.returncode == refresh_rates.EXIT_AGREES, completed.stderr + completed.stdout
-    assert "no [cost] table upstream, skipped: claude-image-latest" in completed.stdout
+    assert "no text-token price upstream, skipped: claude-image-latest" in completed.stdout
     assert "every catalog row agrees with the table" in completed.stdout
 
     # A write adds no row for the skipped id.
@@ -432,7 +826,7 @@ def test_an_entry_without_a_cost_table_is_skipped_unless_the_table_prices_it(
     for extra in ((), ("--write", "--today", "2026-09-23", "--commit", SYNTHETIC_COMMIT)):
         completed = run("--catalog-dir", str(catalog), "--rates", str(asked), *extra)
         assert_refused(completed, f"priced id without a cost table {extra}")
-        assert "claude-image-latest: has no [cost] table upstream" in completed.stderr
+        assert "claude-image-latest: has no text-token price upstream" in completed.stderr
     assert asked.read_bytes() == before
 
     # A catalog in which nothing is priced has nothing to compare.

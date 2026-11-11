@@ -192,9 +192,9 @@ def test_missing_turn_model_is_unpriced_not_dropped(tmp_path):
 
 @pytest.mark.parametrize("dataset,fmt,expected,exit_code", [
     ("priced", "table", "6b949e9da79bd26eae65f1e7f03c8cd40bc18035bd3a0eb7125dc744b47ebf6d", 0),
-    ("priced", "json", "2317b68c5534fd34dbf9524823cc882f726f7f501f193d510dec1255e85b9fe5", 0),
+    ("priced", "json", "e75cc5a21e01521aaffc314d85b36b12aa72d6af8763fc5be82f8c9909a0b862", 0),
     ("unpriced", "table", "720ef0ef0bd44b44dcc67e56e04f650cf8d4b99ba43837f8162a8db936ab9169", 3),
-    ("unpriced", "json", "18bca1d93e272e7d86bc0e7711e0ee26b62c12c462d99dae65df69ccefe74c78", 3),
+    ("unpriced", "json", "bf9964565907f6d970ff83efaa22e50893038ea40c702e7353dd486372daa569", 3),
 ])
 def test_claude_code_fixture_output_is_byte_identical(dataset, fmt, expected, exit_code):
     # SHA-256 of the existing fixture outputs, captured before adding Codex.
@@ -207,6 +207,10 @@ def test_claude_code_fixture_output_is_byte_identical(dataset, fmt, expected, ex
     # its output being unchanged is the actual compatibility claim: a date-only
     # window over records with no server-tool calls still renders byte for byte
     # as it did.
+    #
+    # Both JSON hashes were re-pinned once more when the Claude Code collection
+    # block gained `files_skipped`; the only difference in either output is that
+    # one added `"files_skipped": 0` line. Both table hashes are untouched.
     proc = run(DATA / dataset, "--runtime", "claude-code", "--since", "2026-08-01",
                "--until", "2026-08-31", "--format", fmt)
     assert proc.returncode == exit_code
@@ -620,3 +624,69 @@ def test_unpublished_model_prices_are_not_guessed_or_non_billable(tmp_path, mode
     assert result["totals"]["tokens"] == 1100
     assert result["totals"]["priced_tokens"] == 0
     assert not result["non_billable_models"]
+
+
+# The auto-review (guardian) thread shape: its session_meta names the thread
+# source, and in a ChatGPT-signed-in session every token_count carries the plan
+# in rate_limits. Synthetic values; the field names are the inspected ones.
+_GUARDIAN_META = {
+    "thread_source": {"thread_source": "guardian_review", "source": {"subagent": {"other": "guardian"}}},
+    "subagent_only": {"source": {"subagent": {"other": "guardian"}}},
+}
+
+
+def _review_rollout(meta="thread_source", plan="pro", stamp="2026-10-20T12:00:00Z"):
+    entries = []
+    if meta is not None:
+        entries.append({"type": "session_meta", "payload": _GUARDIAN_META[meta]})
+    entries += [{"type": "turn_context", "payload": {"model": "codex-auto-review"}},
+                _settings("default")]
+    token = _token(1000, 100, stamp=stamp)
+    limits = _meter(10, stamp=stamp)["payload"]["rate_limits"]
+    if plan is not None:
+        limits["plan_type"] = plan
+    token["payload"]["rate_limits"] = limits
+    return entries + [token]
+
+
+@pytest.mark.parametrize("meta", sorted(_GUARDIAN_META))
+def test_auto_review_under_a_chatgpt_plan_is_shown_but_off_the_plan_total(tmp_path, meta):
+    _write(tmp_path, _review_rollout(meta), "rollout-review.jsonl")
+    work = _token(1000, 100, stamp="2026-10-20T13:00:00Z")
+    work["payload"]["rate_limits"] = {"limit_id": "codex", "plan_type": "pro"}
+    _write(tmp_path, [_context(), _settings("default"), work], "rollout-work.jsonl")
+
+    payload = _json(tmp_path)  # exit 0: a plan-exempt row is not an unpriced one
+    rows = {row["model_id"]: row for row in payload["models"]}
+    review = rows["codex-auto-review"]
+    assert (review["billable"], review["plan_exempt"], review["cost"]) == (False, True, None)
+    assert review["tokens"]["total"] == 1100
+    assert rows["gpt-6-astra"]["plan_exempt"] is False
+    assert payload["unpriced_models"] == payload["non_billable_models"] == []
+    assert payload["complete"] is True
+    # The token total still shows everything; the plan-exempt share is split out.
+    assert payload["totals"]["tokens"] == 2200
+    assert payload["totals"]["plan_exempt_tokens"] == 1100
+    assert payload["totals"]["plan_exempt_requests"] == 1
+    assert payload["totals"]["priced_tokens"] == 1100
+    # 1000 uncached x 10 + 100 output x 50 = 15000 per million.
+    assert payload["totals"]["cost"] == "0.015000"
+
+    table = run(tmp_path).stdout
+    assert "plan-exempt" in table
+    assert "Plan-exempt: 1,100 token(s) in 1 request(s)" in table
+
+
+@pytest.mark.parametrize("case,rollout", [
+    ("no plan in rate_limits: API-key sign-in", _review_rollout(plan=None)),
+    ("before auto-review became free", _review_rollout(stamp="2026-10-05T23:59:59Z")),
+    ("model alone, not the guardian thread", _review_rollout(meta=None)),
+])
+def test_auto_review_without_plan_evidence_keeps_todays_treatment(tmp_path, case, rollout):
+    _write(tmp_path, rollout)
+    payload = _json(tmp_path, exit_code=3)
+    row = payload["models"][0]
+    assert (row["billable"], row["plan_exempt"], row["cost"]) == (True, False, None), case
+    assert payload["unpriced_models"] == ["codex-auto-review"]
+    assert payload["totals"]["plan_exempt_tokens"] == 0
+    assert "Plan-exempt:" not in run(tmp_path).stdout

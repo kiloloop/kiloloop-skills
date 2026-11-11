@@ -23,6 +23,11 @@ the adapter:
 python -m pip install memory-lint==0.1.0
 ```
 
+The adapter runs only that installed release. A `memory_lint` reached first
+through `PYTHONPATH` or the working directory, such as a source checkout, is
+refused with exit `2` before any of its code runs, even when build metadata
+for the pinned version sits beside it.
+
 ## Workflow
 
 1. Locate the corpus configuration file. Every input is a named flag; do not

@@ -386,6 +386,32 @@ def test_fable_5_1_cache_reads_price_at_a_fortieth_of_input() -> None:
     assert fable_5.cache_read == Decimal("1.000")
 
 
+def test_fable_5_2_priced_at_its_published_rates() -> None:
+    """Claude Fable 5.2 lists below Fable 5.1: $8 input and $40 output per
+    million, cache hits at 0.025x input ($0.20), writes at the table's 1.25x
+    and 2x ($10 and $16), and fast mode at $16 / $80.
+
+    Pinned against the shipped table directly, like the 5.1 rates above.
+    """
+    rates = usage_cost.RateTable.load(SCRIPTS / "rates.json")
+    model = rates.lookup("claude-fable-5-2")
+    assert model is not None
+    assert model.input == Decimal("8.00")
+    assert model.output == Decimal("40.00")
+    assert model.cache_read == Decimal("0.20000")
+    assert model.cache_write_5m == Decimal("10.0000")
+    assert model.cache_write_1h == Decimal("16.000")
+
+    # Fast mode doubles the token rates; caching stacks on top of it, so the
+    # variant keeps the model's 0.025x read multiplier.
+    fast = rates.lookup("claude-fable-5-2#fast")
+    assert fast is not None
+    assert fast.input == Decimal("16.00")
+    assert fast.output == Decimal("80.00")
+    assert fast.cache_read == Decimal("0.40000")
+    assert fast.cache_write_1h == Decimal("32.000")
+
+
 def _table(**models) -> dict:
     return {
         "rate_table_version": "test",
@@ -777,6 +803,94 @@ def test_a_request_is_reconciled_before_any_window_is_applied(tmp_path: Path) ->
     # It belongs to exactly one of the two days, priced whole, never both.
     assert (day_one["totals"]["requests"], day_one["totals"]["tokens"]) == (1, 1093)
     assert day_two["totals"]["requests"] == 0
+
+
+def _write_dated_transcript(path: Path, records: list[dict], last_written: str) -> None:
+    """A transcript whose mtime is the moment its session last wrote to it."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(json.dumps(record) for record in records), encoding="utf-8")
+    stamp = runtime_adapters._parse_instant(last_written).timestamp()
+    os.utime(path, (stamp, stamp))
+
+
+@pytest.mark.parametrize("since", ["2026-08-20", "2026-08-20T00:00:00Z"])
+def test_a_transcript_last_written_before_the_window_is_skipped_unread(
+    tmp_path: Path, since: str
+) -> None:
+    """Every call parsed the whole store, whatever the window.
+
+    A transcript last written well before the window opens holds no request
+    inside it, so it is skipped and counted rather than read. A forked session
+    copies its original's requests into the new transcript with their original
+    stamps, so the copy of a skipped original still falls outside the window and
+    the windowed result is what reading every file gives.
+    """
+    root = tmp_path / "store"
+    _write_dated_transcript(
+        root / "original.jsonl",
+        [_snapshot("2026-08-01T10:00:00Z", key="req-old", output_tokens=100)],
+        last_written="2026-08-01T10:05:00Z",
+    )
+    _write_dated_transcript(
+        root / "fork.jsonl",
+        [
+            _snapshot("2026-08-01T10:00:00Z", key="req-old", output_tokens=100),
+            _snapshot("2026-08-20T09:00:00Z", key="req-fork", output_tokens=7),
+        ],
+        last_written="2026-08-20T09:05:00Z",
+    )
+    _write_dated_transcript(
+        root / "recent.jsonl",
+        [_snapshot("2026-08-20T12:00:00Z", key="req-new", output_tokens=50)],
+        last_written="2026-08-20T12:05:00Z",
+    )
+
+    everything, _ = run_json("--data-root", str(root))
+    windowed, completed = run_json("--data-root", str(root), "--since", since)
+
+    assert (everything["totals"]["requests"], everything["totals"]["tokens"]) == (3, 157)
+    assert everything["collection"]["files_skipped"] == 0
+    assert completed.returncode == 0, completed.stderr
+    assert (windowed["totals"]["requests"], windowed["totals"]["tokens"]) == (2, 57)
+    assert windowed["collection"]["files_skipped"] == 1
+    assert windowed["collection"]["files_scanned"] == 2
+    assert windowed["collection"]["filtered_out"] == 1  # the fork's copy of req-old
+    assert "Skipped 1 transcript file(s)" in run_cli(
+        "--data-root", str(root), "--since", since
+    ).stdout
+
+
+def test_only_a_file_written_more_than_a_day_before_the_window_is_skipped(
+    tmp_path: Path,
+) -> None:
+    """The cutoff keeps a day of slack below the window's lower edge.
+
+    A day edge is first widened to the earliest moment that day starts in any
+    zone (14 hours before midnight UTC), so the cutoff for 2026-08-20 is
+    2026-08-18T10:00Z whatever --tz says. An --until alone never skips: it says
+    nothing about when a file was last written.
+    """
+    root = tmp_path / "slack"
+    for name, last_written in (
+        ("before-cutoff", "2026-08-18T09:59:00Z"),
+        ("inside-slack", "2026-08-18T10:01:00Z"),
+    ):
+        _write_dated_transcript(
+            root / f"{name}.jsonl",
+            [_snapshot("2026-08-18T09:00:00Z", key=f"req-{name}", output_tokens=1)],
+            last_written=last_written,
+        )
+
+    for zone in ("UTC", "Pacific/Kiritimati", "Pacific/Pago_Pago"):
+        payload, _ = run_json("--data-root", str(root), "--tz", zone, "--since", "2026-08-20")
+        assert payload["collection"]["files_skipped"] == 1, zone
+        assert payload["collection"]["files_scanned"] == 1, zone
+
+    instant, _ = run_json("--data-root", str(root), "--since", "2026-08-19T10:00:00Z")
+    assert instant["collection"]["files_skipped"] == 1
+    upper_only, _ = run_json("--data-root", str(root), "--until", "2026-08-10")
+    assert upper_only["collection"]["files_skipped"] == 0
+    assert upper_only["collection"]["files_scanned"] == 2
 
 
 def test_divergent_copies_are_counted_per_request_not_per_copy(tmp_path: Path) -> None:

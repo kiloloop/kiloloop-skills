@@ -157,6 +157,13 @@ Two properties of the format shape the implementation:
   absent field contributes zero. A record carrying no request identity is
   counted on its own rather than merged with every other identity-less
   record. All of these counts appear in the output.
+- **A window skips the files it cannot reach.** With `--since`, a transcript
+  last written more than a day before the window opens is skipped unread and
+  counted in `files_skipped`. A transcript is only appended to, so it holds no
+  record stamped after its mtime, and a forked or resumed session copies earlier
+  requests with their original stamps, so a skipped original cannot move a
+  copy into the window. A day edge is first widened to the earliest moment that
+  day starts in any zone. `--until` alone reads every file.
 
 ### Codex
 
@@ -223,6 +230,24 @@ each positive cumulative increment as a request; batched or partial increments
 cannot establish exact per-request long-context billing. Unknown tiers, models
 without rates, and Fast rows lacking a Fast rate stay `UNPRICED` (exit `3`),
 with tokens counted and cost withheld.
+
+Codex auto-review (the approval reviewer under Settings → Permissions →
+Auto-review) is free and off plan usage limits for ChatGPT sign-in, but not
+for API-key sign-in
+([OpenAI Help Center](https://help.openai.com/en/articles/11369540-using-codex-with-your-chatgpt-plan)).
+The change was [announced on 2026-10-06](https://x.com/thsottiaux/status/2107368734981517634);
+the Help Center states the exemption but not its start date.
+An increment is **plan-exempt** when three things hold. Its rollout's
+`session_meta` marks the auto-review thread (`thread_source:
+"guardian_review"`, or `source.subagent.other: "guardian"`). Its own
+`token_count`, or an earlier one in that rollout, carries
+`rate_limits.plan_type`. And it is stamped at or after
+2026-10-06T00:00Z. Its row stays visible, marked `plan-exempt` (JSON
+`plan_exempt: true`, `billable: false`), carries no cost, and does not make the
+report incomplete. JSON `totals.plan_exempt_tokens` and `plan_exempt_requests`
+give the share to subtract from `totals.tokens` for plan usage. Without that
+evidence, such as an API-key session or a record from before the change,
+auto-review is treated like any other unpriced model.
 
 Input, output, and total counters are required; absent cache/reasoning fields
 contribute zero. Present counters must be non-negative integers, subsets must
@@ -316,8 +341,9 @@ The table's `cache_multipliers` are the default:
 
 A model whose published cache pricing departs from the default carries its own
 `cache_multipliers` block, which overrides only the tiers it names. Claude
-Fable 5.1 and Claude Mythos 5.1 bill cache reads at 0.025x input (USD 0.25
-per million against USD 10 input), so their entries carry `{"read": "0.025"}` and
+Fable 5.2, Claude Fable 5.1 and Claude Mythos 5.1 bill cache reads at 0.025x
+input (USD 0.20 per million against USD 8 input on Fable 5.2, USD 0.25 against
+USD 10 on the 5.1 models), so their entries carry `{"read": "0.025"}` and
 keep the default write multipliers. A malformed override is a rate-table error
 (exit `2`), not a model that quietly prices at the default.
 
@@ -355,8 +381,8 @@ against the pricing page independently of the model rows. A malformed entry is
 a rate-table error (exit `2`), for the same reason a malformed model row is: a
 tool listed with a corrupt rate must never read as merely unpriced, which is
 the one reading that silently understates a cost. The block is hand-maintained
-— the models.dev catalog prices tokens per model only and carries no per-call
-tool rate, so `refresh_rates.py` neither reads nor writes it.
+— `refresh_rates.py` compares token prices only, so it neither reads nor writes
+it, even where the models.dev catalog lists a web-search price.
 
 **The two totals have different scopes, and the report says so.** The token
 total counts every record observed; the cost total covers only priced, billable
@@ -386,7 +412,8 @@ by adding model data; the report keeps its tokens and withholds its cost.
 
 No published API price was established for `codex-auto-review` or
 `gpt-6.1-astra` on 2026-10-15 UTC. They remain `UNPRICED`; neither is treated
-as a free, non-billable local message or an alias of another model.
+as a free, non-billable local message or an alias of another model. Auto-review
+in a ChatGPT-signed-in session is plan-exempt instead; see [Codex](#codex).
 
 ### Updating it
 
@@ -412,9 +439,9 @@ or changed rows on request. It is a maintenance step for when a model launches,
 not something the report runs: the report never touches the network.
 
 ```
-$ python scripts/refresh_rates.py --commit 860de7fed98d7a80ea77c8323b210f63eb6108b9
-anomalyco/models.dev@860de7fed98d (anthropic) vs rates.json (rate_table_version 2026-10-15)
-  absent upstream, left as-is: claude-mythos-5, claude-mythos-5-1, gpt-5.2, gpt-5.3-codex, gpt-5.4, gpt-5.4-mini, gpt-5.5, gpt-5.6, gpt-5.6-luna, gpt-5.6-sol, gpt-5.6-terra, gpt-6-astra, gpt-6-luna, gpt-6-sol, gpt-6.1-sol
+$ python scripts/refresh_rates.py --commit 7da1fadabbafc4c70078b6f1988c2283422ddb16
+anomalyco/models.dev@7da1fadabbaf (anthropic) vs rates.json (rate_table_version 2026-11-11)
+  absent upstream, left as-is: claude-mythos-5, claude-mythos-5-1, gpt-5.2, gpt-5.3-codex, gpt-5.4, gpt-5.4-mini, gpt-5.5, gpt-5.6, gpt-5.6-luna, gpt-5.6-sol, gpt-5.6-terra, gpt-6-astra, gpt-6-luna, gpt-6-sol, gpt-6.1-sol, gpt-6.1-terra
   dated aliases covered by their base id: claude-haiku-4-5-20251001, claude-opus-4-5-20251101, claude-sonnet-4-5-20250929
   every catalog row agrees with the table
 ```
@@ -430,11 +457,16 @@ only an exact commit names one catalog. `--write` always needs `--commit`,
 even against a local `--catalog-dir`, so the provenance block is never written
 empty.
 
-Two things the catalog cannot express stay hand-maintained from the published
-pricing page, and the script says so rather than guessing: models it does not
-list (limited-availability models are reported as absent upstream and left
-untouched), and the 1-hour cache-write rate (the catalog carries a single
-cache-write price, compared against the 5-minute tier and never written).
+The script reads both catalog layouts: schema 1's flat `[cost]` prices and
+schema 2's `[cost.text.input]` / `[cost.text.output]`, where fast mode is
+priced by the mode's own `[cost]` or by the multipliers for the service tier
+it runs on. A schema-2 text price in any unit but tokens (per character or per
+second, say) is refused with exit `2` rather than written as a per-token rate.
+Two things stay hand-maintained from the published pricing page,
+and the script says so rather than guessing: models the catalog does not list
+(limited-availability models are reported as absent upstream and left
+untouched), and the 1-hour cache-write rate (only the shortest-lived catalog
+write price is compared, against the 5-minute tier, and never written).
 `source_checked`, the date a person last read the published page, is never
 moved by the script.
 
@@ -547,8 +579,8 @@ figure. These are readings of the report, not advice; whether anything should
 change is the reader's call.
 
 - **Cache reads are the cheap class.** A cache read bills at the model's read
-  multiplier — 0.1x input on most models, 0.025x on Claude Fable 5.1 and
-  Claude Mythos 5.1 — so a large cache-read share means repeated context was
+  multiplier — 0.1x input on most models, 0.025x on Claude Fable 5.2, Claude
+  Fable 5.1 and Claude Mythos 5.1 — so a large cache-read share means repeated context was
   re-read at a small fraction of the price of resending it uncached.
 - **Cache writes bill above the input rate** — 1.25x for the 5-minute
   lifetime, 2x for the 1-hour. Writes rivaling reads in the JSON cache split

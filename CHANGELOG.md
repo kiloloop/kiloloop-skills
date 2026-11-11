@@ -8,6 +8,22 @@ A release is a snapshot of the whole collection. Skills are distributed
 together but installed independently, so the exact tool versions each release
 pins are also recorded in [Pinned tool versions](#pinned-tool-versions).
 
+## [0.4.7] - 2026-11-11
+
+### Added
+
+- Price Claude Fable 5.2 usage, fast mode included, at published Anthropic rates in [usage-cost](skills/usage-cost/SKILL.md#rate-table).
+
+### Changed
+
+- Skip Claude Code transcripts last written over a day before `--since` rather than parsing the whole store, in [usage-cost](skills/usage-cost/SKILL.md#claude-code).
+- Show Codex auto-review in ChatGPT-signed-in sessions as plan-exempt, split out of the plan total and uncosted, in [usage-cost](skills/usage-cost/SKILL.md#codex).
+
+### Fixed
+
+- Read the models.dev catalog's schema-2 layout in `refresh_rates.py`, which exited `2` on every current catalog commit, in [usage-cost](skills/usage-cost/SKILL.md#refreshing-from-the-modelsdev-catalog).
+- Refuse a shadowing `memory_lint` on `PYTHONPATH` or in the working directory, exiting `2` before any of its code runs, in [memory-lint](skills/memory-lint/SKILL.md#install).
+
 ## [0.4.6] - 2026-10-31
 
 ### Added
@@ -180,6 +196,7 @@ reading every entry above.
 
 | Release | Skill | Pinned distribution |
 | --- | --- | --- |
+| 0.4.7 | `memory-lint` | `memory-lint==0.1.0` |
 | 0.4.6 | `memory-lint` | `memory-lint==0.1.0` |
 | 0.4.5 | `memory-lint` | `memory-lint==0.1.0` |
 | 0.4.4 | `memory-lint` | `memory-lint==0.1.0` |
@@ -191,6 +208,7 @@ reading every entry above.
 | 0.2.0 | `memory-lint` | `memory-lint==0.1.0` |
 | 0.1.0 | `memory-lint` | `memory-lint==0.1.0` |
 
+[0.4.7]: https://github.com/kiloloop/kiloloop-skills/compare/v0.4.6...v0.4.7
 [0.4.6]: https://github.com/kiloloop/kiloloop-skills/compare/v0.4.5...v0.4.6
 [0.4.5]: https://github.com/kiloloop/kiloloop-skills/compare/v0.4.4...v0.4.5
 [0.4.4]: https://github.com/kiloloop/kiloloop-skills/compare/v0.4.3...v0.4.4

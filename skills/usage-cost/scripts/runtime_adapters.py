@@ -19,7 +19,7 @@ import os
 import time
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import date, datetime, timezone, tzinfo
+from datetime import date, datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from typing import Protocol
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -182,12 +182,16 @@ class UsageRecord:
     # identity (model or speed) differs.
     timestamp: str | None = None
     service_tier: str | None = None
+    # Usage the runtime's own plan does not meter, such as Codex auto-review
+    # under ChatGPT sign-in. Counted and shown, never costed.
+    plan_exempt: bool = False
 
 
 @dataclass
 class CollectionResult:
     records: list[UsageRecord] = field(default_factory=list)
     files_scanned: int = 0
+    files_skipped: int = 0
     unreadable_files: int = 0
     malformed_lines: int = 0
     duplicate_records: int = 0
@@ -527,10 +531,19 @@ class ClaudeCodeAdapter:
         # move the whole request into the next day.
         earliest_day: dict[tuple[str, ...], str | None] = {}
         divergent: set[tuple[str, ...]] = set()
+        cutoff = _mtime_cutoff(since)
 
         for path in sorted(root.rglob("*.jsonl")):
             if not path.is_file():
                 continue
+            if cutoff is not None:
+                try:
+                    stale = path.stat().st_mtime < cutoff
+                except OSError:
+                    stale = False  # the read below counts it as unreadable
+                if stale:
+                    result.files_skipped += 1
+                    continue
             result.files_scanned += 1
             try:
                 lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -719,12 +732,31 @@ class ClaudeCodeAdapter:
         )
 
 
+# Codex auto-review is free and does not count toward plan usage limits for
+# ChatGPT sign-in from this date; API-key sign-in is not covered.
+AUTO_REVIEW_FREE_SINCE = datetime(2026, 10, 6, tzinfo=timezone.utc)
+
+
+def _is_auto_review_thread(meta: dict) -> bool:
+    """Whether a rollout's session_meta marks the auto-review (guardian) thread."""
+    if meta.get("thread_source") == "guardian_review":
+        return True
+    source = meta.get("source")
+    subagent = source.get("subagent") if isinstance(source, dict) else None
+    return isinstance(subagent, dict) and subagent.get("other") == "guardian"
+
+
 class CodexAdapter:
     """Read cumulative usage in file order, then select deltas by timestamp.
 
     A repeated cumulative snapshot contributes nothing. A decrease in the
     total counter starts a new segment whose first snapshot counts in full.
     `last_token_usage` is never summed: it can be re-emitted without new work.
+
+    An increment from an auto-review thread is plan-exempt when its session
+    shows a ChatGPT plan (`rate_limits.plan_type`) and it is stamped on or
+    after `AUTO_REVIEW_FREE_SINCE`. Without plan evidence the increment is
+    treated like any other, because API-key use of auto-review is not free.
     """
 
     name = CODEX
@@ -795,6 +827,8 @@ class CodexAdapter:
         model = "unknown-codex-model"
         service_tier = "unknown"
         session_cwd = None
+        auto_review = False
+        plan_type = None
         for line_number, line in enumerate(lines, 1):
             if not line.strip():
                 continue
@@ -813,6 +847,8 @@ class CodexAdapter:
                 value = payload.get("cwd")
                 if isinstance(value, str) and os.path.isabs(value):
                     session_cwd = os.path.normpath(value)
+            if entry.get("type") == "session_meta" and _is_auto_review_thread(payload):
+                auto_review = True
             if entry.get("type") == "event_msg" and payload.get("type") == "thread_settings_applied":
                 settings = payload.get("thread_settings")
                 value = settings.get("service_tier") if isinstance(settings, dict) else None
@@ -830,6 +866,10 @@ class CodexAdapter:
             # Meter-only and duplicate events can still carry a newer meter.
             self._collect_meter(payload.get("rate_limits"), timestamp, day,
                                 result, since, until, zone)
+            limits = payload.get("rate_limits")
+            value = limits.get("plan_type") if isinstance(limits, dict) else None
+            if isinstance(value, str) and value.strip():
+                plan_type = value
             info = payload.get("info")
             if info is None:
                 continue
@@ -866,6 +906,11 @@ class CodexAdapter:
             if cwd is not None and session_cwd != cwd:
                 result.cwd_filtered_out += 1
                 continue
+            instant = _parse_instant(timestamp)
+            plan_exempt = (
+                auto_review and plan_type is not None
+                and instant is not None and instant >= AUTO_REVIEW_FREE_SINCE
+            )
             result.records.append(UsageRecord(
                 model=model,
                 service_tier=service_tier,
@@ -881,6 +926,7 @@ class CodexAdapter:
                 dedup_key=(str(path), str(line_number)),
                 cache_split_exact=not bool(delta[2]),
                 timestamp=timestamp if isinstance(timestamp, str) else None,
+                plan_exempt=plan_exempt,
             ))
 
     @staticmethod
@@ -939,6 +985,44 @@ class CodexAdapter:
                 limits.get("limit_id"), slot,
             ))
 
+
+
+# A transcript is only ever appended to, so its mtime is no earlier than the
+# stamp of its last record, and a file last written before the window opens
+# holds no record inside it. A forked or resumed session copies earlier
+# requests into its new transcript with their original stamps, so skipping the
+# original cannot move a copy into the window. The slack absorbs clock and
+# filesystem-timestamp disagreement without giving up the gain.
+_MTIME_SLACK = timedelta(days=1)
+# The widest UTC offset in use: a calendar day starts no earlier than this long
+# before midnight UTC on the same date, whatever the report zone.
+_WIDEST_UTC_OFFSET = timedelta(hours=14)
+
+
+def _mtime_cutoff(since: Bound | None) -> float | None:
+    """The mtime before which a transcript cannot hold an in-window record.
+
+    Only the lower edge can rule a file out: the upper edge says nothing about
+    when a file was last written. A day edge is widened to the earliest moment
+    that day starts in any zone, so the cutoff never depends on the report
+    zone, including the platform-local fallback.
+    """
+    if since is None:
+        return None
+    if since.instant is not None:
+        edge = since.instant
+    elif since.day is not None:
+        try:
+            day = date.fromisoformat(since.day)
+        except ValueError:
+            return None
+        edge = (
+            datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
+            - _WIDEST_UTC_OFFSET
+        )
+    else:
+        return None
+    return (edge - _MTIME_SLACK).timestamp()
 
 
 def _within(

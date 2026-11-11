@@ -8,20 +8,26 @@ report does not run it. It reads one provider's model files from the models.dev
 repository at an exact commit, compares them with the table, and either prints
 the differences or writes them back.
 
-It proposes; it does not decide. Three things the catalog cannot express stay
-hand-maintained from the published pricing page: the 1-hour cache-write rate
-(the catalog carries a single cache-write price, which is compared against the
-5-minute tier and never written), models the catalog does not list, and the
-`server_tools` block. The catalog is a per-model index and prices tokens only —
-it carries no per-call rate for a server-side tool such as web search, and its
-`tool_call` field is a capability flag, not a price — so this script neither
-reads nor writes that block. Rows the catalog lacks are left untouched, and
-`source_checked` — the date the published page was last read by a person — is
-never moved by this script.
+It reads both catalog layouts: schema 1, with flat `[cost]` prices, and
+schema 2 (`schema = 2`), with prices under `[cost.text.input]` and
+`[cost.text.output]` and fast mode priced by a service-tier multiplier or by
+the mode's own `[cost]`. Both map onto the same fields. A schema-2 text price
+in a unit other than tokens is refused, never written as a per-token rate.
 
-A catalog entry with no [cost] table has nothing to compare, so it is skipped
-and listed by id — unless the table has a row for that id, where a missing
-upstream price is a discrepancy and stops the run.
+It proposes; it does not decide. Three things stay hand-maintained from the
+published pricing page: the 1-hour cache-write rate (only the shortest-lived
+cache-write price is compared, against the 5-minute tier, and it is never
+written), models the catalog does not list, and the `server_tools` block. The
+script reads token prices only, so it neither reads nor writes that block,
+even though schema 2 lists a web-search price (schema 1 had none; its
+`tool_call` field is a capability flag, not a price). Rows the catalog lacks
+are left untouched, and `source_checked` — the date the published page was
+last read by a person — is never moved by this script.
+
+A catalog entry with no text-token price — no [cost] table at all, or a
+schema-2 cost for audio or images only — has nothing to compare, so it is
+skipped and listed by id, unless the table has a row for that id. Then a
+missing upstream price is a discrepancy and stops the run.
 
 Exit codes:
     0  the table agrees with the catalog, or --write brought it into agreement
@@ -174,6 +180,171 @@ def _base_model_ref(model_id: str, value: str) -> str:
     return value
 
 
+_DURATION = re.compile(r"(\d+)([smhd])")
+_DURATION_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+
+
+def _shortest_write(name: str, write: object) -> Decimal:
+    """The schema-2 cache-write price comparable to the table's 5-minute tier.
+
+    `write` is one price or a table of prices keyed by cache lifetime (`5m` and
+    `1h` on Anthropic, `30m` and `12h` on OpenAI). A schema-1 file carried one
+    `cache_write`, and it was always the shortest-lived tier, so that tier is
+    the one compared.
+    """
+    if not isinstance(write, dict):
+        return _decimal(name, write)
+    if not write:
+        raise CatalogError(f"{name} must name at least one cache lifetime")
+    lifetimes: list[tuple[int, str]] = []
+    for lifetime in write:
+        match = _DURATION.fullmatch(lifetime)
+        if match is None:
+            raise CatalogError(f"{name} has an unreadable cache lifetime {lifetime!r}")
+        lifetimes.append((int(match.group(1)) * _DURATION_SECONDS[match.group(2)], lifetime))
+    shortest = min(lifetimes)[1]
+    return _decimal(f"{name}.{shortest}", write[shortest])
+
+
+def _text_price(name: str, cost: dict, side: str) -> tuple[Decimal, dict] | None:
+    """`[cost.text.<side>].price` and its table, or None when the side is not priced."""
+    text = _table(name, cost, "text")
+    if text is None:
+        return None
+    block = _table(f"{name}.text", text, side)
+    if block is None or "price" not in block:
+        return None
+    return _decimal(f"{name}.text.{side}.price", block["price"]), block
+
+
+def _require_token_unit(name: str, block: dict, side: str) -> None:
+    """Refuse a priced text side whose `unit` is not tokens.
+
+    The table is per million tokens. Schema 2 can price text per character,
+    second or another unit, and such a price copied into a token row would be a
+    confident wrong figure. An omitted unit means tokens.
+    """
+    unit = block.get("unit", "token")
+    if unit != "token":
+        raise CatalogError(
+            f"{name}.text.{side}.unit is {unit!r}; only per-token prices map onto this table"
+        )
+
+
+def _text_factor(name: str, factor: object, side: str) -> Decimal:
+    """The part of a schema-2 multiplier factor that scales text tokens on one side.
+
+    A bare number scales every price; a table scales only the categories it
+    names, so a category it leaves out is unscaled. Finer splits than the text
+    side (a factor for the cache tier alone, say) are refused rather than
+    approximated.
+    """
+    node = factor
+    for key in ("text", side):
+        if not isinstance(node, dict):
+            break
+        if key not in node:
+            return Decimal(1)
+        node = node[key]
+    if isinstance(node, dict):
+        raise CatalogError(f"{name} splits the text {side} factor finer than this script reads")
+    return _decimal(name, node)
+
+
+def _matches_tier(when: object, tier: str) -> bool:
+    """True for a condition on the service tier alone that selects `tier`.
+
+    A multiplier that also conditions on something else — a region, a context
+    size, a date — does not price the list rate, so it is not applied.
+    """
+    if not isinstance(when, dict) or set(when) != {"service_tier"}:
+        return False
+    condition = when["service_tier"]
+    if not isinstance(condition, dict) or len(condition) != 1:
+        return False
+    if "equals" in condition:
+        return condition["equals"] == tier
+    if "in" in condition and isinstance(condition["in"], list):
+        return tier in condition["in"]
+    return False
+
+
+def _parse_entry_v2(
+    model_id: str, data: dict, cost: dict, display_name: Callable[[], str]
+) -> CatalogEntry:
+    """Read a schema-2 file: prices nest under [cost.text.input] and [cost.text.output].
+
+    A file with no text-token price (an audio or image model) has no row this
+    table could carry, so it is skipped like a file with no [cost] table.
+    Long-context `overrides` are not read, as schema-1 tiers were not.
+    """
+    label = f"{model_id}.cost"
+    priced_input = _text_price(label, cost, "input")
+    priced_output = _text_price(label, cost, "output")
+    if priced_input is None or priced_output is None:
+        raise UnpricedEntry(f"{model_id}: has no text-token price; a priced row cannot be derived")
+    input_rate, input_block = priced_input
+    output_rate, output_block = priced_output
+    _require_token_unit(label, input_block, "input")
+    _require_token_unit(label, output_block, "output")
+
+    cache_read = cache_write = None
+    cache = _table(f"{label}.text.input", input_block, "cache")
+    if cache is not None:
+        cache_read = _optional_decimal(f"{label}.text.input.cache", cache, "read")
+        if "write" in cache:
+            cache_write = _shortest_write(f"{label}.text.input.cache.write", cache["write"])
+
+    fast_input = fast_output = None
+    experimental = _table(model_id, data, "experimental")
+    modes = _table(f"{model_id}.experimental", experimental, "modes") if experimental else None
+    fast = _table(f"{model_id}.experimental.modes", modes, "fast") if modes else None
+    if fast is not None:
+        mode_label = f"{model_id}.experimental.modes.fast"
+        mode_cost = _table(mode_label, fast, "cost")
+        if mode_cost is not None:
+            # A mode's own [cost] replaces the base prices for that mode.
+            fast_in = _text_price(f"{mode_label}.cost", mode_cost, "input")
+            fast_out = _text_price(f"{mode_label}.cost", mode_cost, "output")
+            if fast_in is None or fast_out is None:
+                raise CatalogError(f"{model_id}: [{mode_label}.cost] must price text input and output")
+            _require_token_unit(f"{mode_label}.cost", fast_in[1], "input")
+            _require_token_unit(f"{mode_label}.cost", fast_out[1], "output")
+            fast_input, fast_output = fast_in[0], fast_out[0]
+        else:
+            # Otherwise the mode runs on a service tier (its own name unless it
+            # names another), and every multiplier for that tier applies.
+            tier = _optional_string(mode_label, fast, "service_tier") or "fast"
+            multipliers = cost.get("multipliers", [])
+            if not isinstance(multipliers, list):
+                raise CatalogError(f"{label}.multipliers must be an array of tables")
+            matched = False
+            in_factor = out_factor = Decimal(1)
+            for index, multiplier in enumerate(multipliers):
+                item = f"{label}.multipliers[{index}]"
+                if not isinstance(multiplier, dict) or "when" not in multiplier or "factor" not in multiplier:
+                    raise CatalogError(f"{item} must be a table with `when` and `factor`")
+                if not _matches_tier(multiplier["when"], tier):
+                    continue
+                matched = True
+                in_factor *= _text_factor(item, multiplier["factor"], "input")
+                out_factor *= _text_factor(item, multiplier["factor"], "output")
+            # A mode no multiplier prices states no fast rate, so none is reported.
+            if matched:
+                fast_input, fast_output = input_rate * in_factor, output_rate * out_factor
+
+    return CatalogEntry(
+        model_id=model_id,
+        display_name=display_name(),
+        input=input_rate,
+        output=output_rate,
+        cache_read=cache_read,
+        cache_write=cache_write,
+        fast_input=fast_input,
+        fast_output=fast_output,
+    )
+
+
 def parse_entry(model_id: str, text: str, base_name: Callable[[str], str]) -> CatalogEntry:
     """Parse one provider model file into the fields the rate table needs.
 
@@ -189,20 +360,31 @@ def parse_entry(model_id: str, text: str, base_name: Callable[[str], str]) -> Ca
     except tomllib.TOMLDecodeError as error:
         raise CatalogError(f"{model_id}: not valid TOML: {error}") from None
 
+    schema = data.get("schema", 1)
+    if isinstance(schema, bool) or schema not in (1, 2):
+        raise CatalogError(f"{model_id}: unsupported catalog schema {schema!r}")
+
     cost = _table(model_id, data, "cost")
     if cost is None:
         raise UnpricedEntry(f"{model_id}: has no [cost] table; a priced row cannot be derived")
+
+    def display_name() -> str:
+        # Resolved only once the entry is known to be priced, so a skipped
+        # entry never costs a base-model read.
+        name = _optional_string(model_id, data, "name")
+        if name is not None:
+            return name
+        base_model = _optional_string(model_id, data, "base_model")
+        if base_model is None:
+            return model_id
+        return base_name(_base_model_ref(model_id, base_model))
+
+    if schema == 2:
+        return _parse_entry_v2(model_id, data, cost, display_name)
+
     for required in ("input", "output"):
         if required not in cost:
             raise CatalogError(f"{model_id}: [cost] is missing {required!r}")
-
-    display_name = _optional_string(model_id, data, "name")
-    if display_name is None:
-        base_model = _optional_string(model_id, data, "base_model")
-        if base_model is None:
-            display_name = model_id
-        else:
-            display_name = base_name(_base_model_ref(model_id, base_model))
 
     fast_input = fast_output = None
     experimental = _table(model_id, data, "experimental")
@@ -222,7 +404,7 @@ def parse_entry(model_id: str, text: str, base_name: Callable[[str], str]) -> Ca
 
     return CatalogEntry(
         model_id=model_id,
-        display_name=display_name,
+        display_name=display_name(),
         input=_decimal(f"{model_id}.cost.input", cost["input"]),
         output=_decimal(f"{model_id}.cost.output", cost["output"]),
         cache_read=_optional_decimal(f"{model_id}.cost", cost, "cache_read"),
@@ -494,7 +676,7 @@ def render(diff: Diff, payload: dict, source_label: str, default_read: Decimal) 
     if diff.aliases_skipped:
         lines.append("  dated aliases covered by their base id: " + ", ".join(diff.aliases_skipped))
     if diff.unpriced_skipped:
-        lines.append("  no [cost] table upstream, skipped: " + ", ".join(diff.unpriced_skipped))
+        lines.append("  no text-token price upstream, skipped: " + ", ".join(diff.unpriced_skipped))
     if not diff.has_changes:
         lines.append("  every catalog row agrees with the table")
     return "\n".join(lines)
@@ -569,7 +751,7 @@ def main(argv: list[str] | None = None) -> int:
         priced_here = [model_id for model_id in unpriced if model_id in payload["models"]]
         if priced_here:
             raise CatalogError(
-                f"{', '.join(priced_here)}: has no [cost] table upstream, but the rate table "
+                f"{', '.join(priced_here)}: has no text-token price upstream, but the rate table "
                 "has a row for it; the row cannot be compared"
             )
     except (

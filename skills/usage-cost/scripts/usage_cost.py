@@ -345,6 +345,7 @@ class ModelTotals:
     priced: bool = True
     billable: bool = True
     service_tier: str | None = None
+    plan_exempt: bool = False
 
     @property
     def total_tokens(self) -> int:
@@ -444,6 +445,15 @@ class Report:
         )
 
     @property
+    def plan_exempt_tokens(self) -> int:
+        """Tokens the runtime's plan does not meter, already in `total_tokens`."""
+        return sum(model.total_tokens for model in self.models if model.plan_exempt)
+
+    @property
+    def plan_exempt_requests(self) -> int:
+        return sum(model.requests for model in self.models if model.plan_exempt)
+
+    @property
     def total_web_search_requests(self) -> int:
         return sum(model.web_search_requests for model in self.models)
 
@@ -475,15 +485,15 @@ def build_report(
         since=since,
         until=until,
     )
-    totals: dict[tuple[str, str | None], ModelTotals] = {}
-    resolved: dict[tuple[str, str | None], ModelRates | None] = {}
+    totals: dict[tuple[str, str | None, bool], ModelTotals] = {}
+    resolved: dict[tuple[str, str | None, bool], ModelRates | None] = {}
 
     for record in records:
         tier = (record.service_tier or "unknown") if runtime == CODEX else None
-        key = (record.model, tier)
+        key = (record.model, tier, record.plan_exempt)
         entry = totals.get(key)
         if entry is None:
-            billable = record.model not in rates.non_billable
+            billable = record.model not in rates.non_billable and not record.plan_exempt
             pricing_id = record.model if tier in (None, "standard") else f"{record.model}#{tier}"
             model_rates = rates.lookup(pricing_id) if billable and tier != "unknown" else None
             resolved[key] = model_rates
@@ -496,6 +506,7 @@ def build_report(
                 ),
                 priced=model_rates is not None,
                 billable=billable,
+                plan_exempt=record.plan_exempt,
                 cost=Decimal(0) if model_rates is not None else None,
             )
             totals[key] = entry
@@ -514,6 +525,8 @@ def build_report(
             entry.cost += _cost_of(record, model_rates)
 
     for entry in totals.values():
+        if entry.plan_exempt:
+            continue
         if not entry.billable:
             report.non_billable_models.append(entry.model_id)
         elif not entry.priced:
@@ -719,7 +732,9 @@ def render_table(report: Report) -> str:
     lines.append(header)
     lines.append("-" * len(header))
     for model in report.models:
-        if not model.billable:
+        if model.plan_exempt:
+            cost = "plan-exempt"
+        elif not model.billable:
             cost = "not billable"
         elif model.priced:
             assert model.cost is not None
@@ -759,11 +774,23 @@ def render_table(report: Report) -> str:
     lines.append("")
 
     if report.priced_tokens != report.total_tokens:
+        markers = (
+            "UNPRICED, not billable or plan-exempt" if report.plan_exempt_tokens
+            else "UNPRICED or not billable"
+        )
         lines.append(
             f"Cost covers {_thousands(report.priced_tokens)} of the "
             f"{_thousands(report.total_tokens)} token(s) shown. The rest belong to "
-            "rows marked UNPRICED or not billable, which are counted in the token "
-            "total but carry no cost."
+            f"rows marked {markers}, which are counted in the token total but carry "
+            "no cost."
+        )
+        lines.append("")
+    if report.plan_exempt_tokens:
+        lines.append(
+            f"Plan-exempt: {_thousands(report.plan_exempt_tokens)} token(s) in "
+            f"{_thousands(report.plan_exempt_requests)} request(s) are Codex "
+            "auto-review in ChatGPT-signed-in sessions, free and off the plan meter "
+            "since 2026-10-06. Subtract them from the token total for plan usage."
         )
         lines.append("")
     if report.unpriced_models and report.runtime != CODEX:
@@ -813,6 +840,11 @@ def render_table(report: Report) -> str:
                 f"merged {_thousands(collection.duplicate_records)} repeated record(s) "
                 "into their requests."
             )
+            if collection.files_skipped:
+                lines.append(
+                    f"Skipped {_thousands(collection.files_skipped)} transcript file(s) "
+                    "last written more than a day before the window opened."
+                )
         if collection.invalid_rate_limits:
             lines.append(f"Ignored {collection.invalid_rate_limits} malformed rate-limit snapshot(s).")
         if collection.unstamped_rate_limits:
@@ -925,6 +957,7 @@ def render_json(report: Report) -> str:
                 "display_name": model.display_name,
                 "priced": model.priced,
                 "billable": model.billable,
+                **({"plan_exempt": model.plan_exempt} if report.runtime == CODEX else {}),
                 "requests": model.requests,
                 "tokens": {
                     "input": model.input_tokens,
@@ -940,6 +973,9 @@ def render_json(report: Report) -> str:
             for model in report.models
         ],
     }
+    if report.runtime == CODEX:
+        payload["totals"]["plan_exempt_requests"] = report.plan_exempt_requests
+        payload["totals"]["plan_exempt_tokens"] = report.plan_exempt_tokens
     if report.cwd is not None:
         payload["project_filter"] = {"cwd": report.cwd, "match": "exact", "meter_scope": "account"}
     if report.server_tools:
@@ -975,6 +1011,8 @@ def render_json(report: Report) -> str:
             payload["collection"]["counter_resets"] = report.collection.counter_resets
             payload["collection"]["invalid_rate_limits"] = report.collection.invalid_rate_limits
             payload["collection"]["unstamped_rate_limits"] = report.collection.unstamped_rate_limits
+        else:
+            payload["collection"]["files_skipped"] = report.collection.files_skipped
         meter = report.collection.rate_limits
         if meter is not None:
             payload["rate_limits"] = {

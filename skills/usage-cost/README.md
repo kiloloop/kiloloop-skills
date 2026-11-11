@@ -204,8 +204,9 @@ binary floating-point error enters the figure.
 **Cache tiers are multiples of the input rate, per model.** The table's
 `cache_multipliers` are the default — reads at 0.1x, 5-minute writes at 1.25x,
 1-hour writes at 2x — and an entry may override any tier for itself. Claude
-Fable 5.1 and Claude Mythos 5.1 read cache at 0.025x input, so a cache-heavy
-day on either would be over-priced four times over at the default.
+Fable 5.2, Claude Fable 5.1 and Claude Mythos 5.1 read cache at 0.025x input,
+so a cache-heavy day on any of them would be over-priced four times over at the
+default.
 
 ## What it cannot see
 
@@ -263,7 +264,9 @@ by adding model data; the report keeps its tokens and withholds its cost.
 
 No published API price was established for `codex-auto-review` or
 `gpt-6.1-astra` on 2026-10-15 UTC. They remain `UNPRICED`; neither is treated
-as a free, non-billable local message or an alias of another model.
+as a free, non-billable local message or an alias of another model. Auto-review
+in a ChatGPT-signed-in session is plan-exempt instead, shown with no cost and
+split out as `totals.plan_exempt_tokens` (see [SKILL.md](SKILL.md#codex)).
 
 ## Refreshing the rate table
 
@@ -273,9 +276,9 @@ repository at one exact commit, and merges new or changed rows with `--write`.
 Run it when a model launches; the report itself never fetches anything.
 
 ```
-$ python scripts/refresh_rates.py --commit 860de7fed98d7a80ea77c8323b210f63eb6108b9
-anomalyco/models.dev@860de7fed98d (anthropic) vs rates.json (rate_table_version 2026-10-15)
-  absent upstream, left as-is: claude-mythos-5, claude-mythos-5-1, gpt-5.2, gpt-5.3-codex, gpt-5.4, gpt-5.4-mini, gpt-5.5, gpt-5.6, gpt-5.6-luna, gpt-5.6-sol, gpt-5.6-terra, gpt-6-astra, gpt-6-luna, gpt-6-sol, gpt-6.1-sol
+$ python scripts/refresh_rates.py --commit 7da1fadabbafc4c70078b6f1988c2283422ddb16
+anomalyco/models.dev@7da1fadabbaf (anthropic) vs rates.json (rate_table_version 2026-11-11)
+  absent upstream, left as-is: claude-mythos-5, claude-mythos-5-1, gpt-5.2, gpt-5.3-codex, gpt-5.4, gpt-5.4-mini, gpt-5.5, gpt-5.6, gpt-5.6-luna, gpt-5.6-sol, gpt-5.6-terra, gpt-6-astra, gpt-6-luna, gpt-6-sol, gpt-6.1-sol, gpt-6.1-terra
   dated aliases covered by their base id: claude-haiku-4-5-20251001, claude-opus-4-5-20251101, claude-sonnet-4-5-20250929
   every catalog row agrees with the table
 ```
@@ -283,10 +286,11 @@ anomalyco/models.dev@860de7fed98d (anthropic) vs rates.json (rate_table_version 
 Exit `0` is agreement, `1` is differences found and not written, `2` is a
 catalog or table that could not be read or an argument that was refused. The
 commit must be a full 40-character SHA; branches, tags, and short SHAs are
-refused, and `--write` always needs one to record. Models the catalog does not
-list, and the 1-hour cache-write rate it has no field for, stay hand-entered
-from the published pricing page — the script reports them and leaves them
-alone.
+refused, and `--write` always needs one to record. It reads both the catalog's
+original flat `[cost]` layout and its schema-2 layout. Models the catalog does
+not list, and the 1-hour cache-write rate, which the script never compares or
+writes, stay hand-entered from the published pricing page — the script
+reports them and leaves them alone.
 
 ## Tests
 

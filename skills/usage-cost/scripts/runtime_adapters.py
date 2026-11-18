@@ -186,6 +186,13 @@ class UsageRecord:
     # under ChatGPT sign-in. Counted and shown, never costed.
     plan_exempt: bool = False
 
+    @property
+    def prompt_tokens(self) -> int:
+        return (
+            self.input_tokens + self.cache_read_tokens
+            + self.cache_write_5m_tokens + self.cache_write_1h_tokens
+        )
+
 
 @dataclass
 class CollectionResult:
@@ -852,8 +859,12 @@ class CodexAdapter:
             if entry.get("type") == "event_msg" and payload.get("type") == "thread_settings_applied":
                 settings = payload.get("thread_settings")
                 value = settings.get("service_tier") if isinstance(settings, dict) else None
-                service_tier = {"priority": "fast", "fast": "fast", "default": "standard"}.get(
-                    value if isinstance(value, str) else "", "unknown")
+                service_tier = {
+                    "priority": "fast",
+                    "fast": "fast",
+                    "ultrafast": "ultrafast",
+                    "default": "standard",
+                }.get(value if isinstance(value, str) else "", "unknown")
                 continue
             if entry.get("type") == "turn_context":
                 value = payload.get("model")

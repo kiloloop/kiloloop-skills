@@ -1,12 +1,12 @@
 ---
 name: usage-cost
-description: Report a coding agent's locally recorded token usage and what that usage would cost at published API list rates. Use when asked what a subscription period's work would have cost per token, which models or cache tiers dominate spend, or how many tokens an agent has actually used.
+description: Report a coding agent's locally recorded token usage and estimate its cost using published API rates, including documented promotions. Use when asked what a subscription period's work would have cost per token, which models or cache tiers dominate spend, or how many tokens an agent has actually used.
 ---
 
 # Subscription Usage Cost
 
 A subscription bills a flat fee, so nothing attaches a price to any individual
-request. The tokens are recorded locally anyway, and list rates are published,
+request. The tokens are recorded locally anyway, and API rates are published,
 so the two can be combined into one number: **what this period's usage would
 have cost had it been billed per token through the API.**
 
@@ -82,9 +82,9 @@ Read the exit status before reporting anything:
 
 | Exit | Meaning |
 | --- | --- |
-| `0` | Report produced; every model was priced. |
+| `0` | Report produced with complete pricing for billable usage. |
 | `2` | Usage, configuration, or rate-table error. |
-| `3` | Report produced, but at least one model id had no rate. Tokens for those rows are counted and shown; their cost is omitted and the total is marked incomplete. |
+| `3` | Report produced with unpriced billable requests. Counts include those requests and the cost total is partial. |
 | `4` | The requested runtime has no readable local usage source — the directory is missing, holds no `.jsonl` transcripts, or none of them could be read. This is distinct from a readable source containing no usage, which is a real zero and exits `0`. |
 
 Exit `3` is a successful run with a caveat, not a failure. Report the total as
@@ -212,10 +212,11 @@ The Astra rate row prices these writes at its published cache-write rate.
 Each increment takes the latest preceding
 `event_msg.payload.thread_settings.service_tier` on a
 `thread_settings_applied` event in the same file. `priority` and `fast` map to
-Fast, `default` to Standard; missing or unrecognized settings map to `unknown`.
+Fast, `ultrafast` to Ultrafast, and `default` to Standard. Missing or
+unrecognized settings map to `unknown`.
 Ordinary turn contexts do not reset the applied setting. The table has a Tier
 column, and JSON `models` has one row per `(model_id, service_tier)` with tier
-values `fast`, `standard`, or `unknown`, including separate tokens and requests.
+values `fast`, `ultrafast`, `standard`, or `unknown`.
 These are recorded settings, not proof of the actual served tier.
 
 SOURCE: [OpenAI Fast mode](https://developers.openai.com/api/docs/guides/fast-mode)
@@ -227,9 +228,9 @@ credit consumption. The table stores Fast in the model's `speeds.fast` entry.
 Above 272,000 input tokens, Astra's `long_context` rule multiplies input/cache
 prices by 2 and output by 1.5 before the Fast premium. This calculation treats
 each positive cumulative increment as a request; batched or partial increments
-cannot establish exact per-request long-context billing. Unknown tiers, models
-without rates, and Fast rows lacking a Fast rate stay `UNPRICED` (exit `3`),
-with tokens counted and cost withheld.
+cannot establish exact per-request long-context billing. Requests with an
+unknown tier or without a rate for their model, speed, or prompt size count
+toward the token total and make the report incomplete (exit `3`).
 
 Codex auto-review (the approval reviewer under Settings → Permissions →
 Auto-review) is free and off plan usage limits for ChatGPT sign-in, but not
@@ -347,9 +348,11 @@ USD 10 on the 5.1 models), so their entries carry `{"read": "0.025"}` and
 keep the default write multipliers. A malformed override is a rate-table error
 (exit `2`), not a model that quietly prices at the default.
 
-A model may also carry a `speeds` block for a variant that prices differently,
-such as fast mode. A variant inherits the model's multipliers and may layer its
-own on top.
+A model may carry named variants under `speeds`, such as `fast` and
+`ultrafast`. Each variant supplies input and output rates and inherits the
+model's cache multipliers, with optional overrides. Its optional
+`max_input_tokens` is a positive integer and includes the boundary. The limit
+uses the whole prompt, including cache reads and writes.
 
 An optional per-model `long_context` block declares `input_tokens_above`,
 `input_multiplier` (also applied to cache rates), and `output_multiplier`.
@@ -385,30 +388,37 @@ the one reading that silently understates a cost. The block is hand-maintained
 it, even where the models.dev catalog lists a web-search price.
 
 **The two totals have different scopes, and the report says so.** The token
-total counts every record observed; the cost total covers only priced, billable
-rows. When those differ, the run states how many of the tokens shown the cost
-actually covers, and `--format json` carries the same split as
-`totals.priced_tokens` and `totals.priced_requests`. A token count and a cost
-sitting on one line would otherwise read as the price of those tokens.
+total counts every record observed. The cost total covers priced, billable
+requests. JSON reports coverage as `totals.priced_tokens` and
+`totals.priced_requests`. A model and tier with both priced and unpriced
+requests stays in one row. The text table labels its subtotal as partial. In
+JSON, that row has `priced: false`, `cost: null`, and its own `priced_cost`,
+`priced_requests` and `priced_tokens`.
 
 ### Codex model price coverage
 
-The table includes GPT-6.1 Sol and Terra, GPT-5.6 Sol/Terra/Luna (and the
-documented `gpt-5.6` Sol alias), plus the API-key models still named in the
-[Codex model guide](https://learn.chatgpt.com/docs/models): GPT-5.5, GPT-5.4,
-GPT-5.4 Mini, GPT-5.2 and GPT-5.3 Codex. These rows record their official
-model-page sources. GPT-6.1 Terra is cross-checked against OpenAI's pricing
-page; the other rows in this list also carry a pinned OpenAI catalog
-cross-check. GPT-6.1 Sol and Terra read cache at 0.05× input; GPT-5.5 and
-earlier charge no cache-write premium, so separately recorded write tokens
-use 1× input rather than the table default.
+The table includes GPT-6.2 Astra and Sol, GPT-6.1 Sol and Terra, GPT-5.6
+Sol/Terra/Luna (and the documented `gpt-5.6` Sol alias), plus the API-key
+models still named in the [Codex model guide](https://learn.chatgpt.com/docs/models).
+The API-key models include GPT-5.5, GPT-5.4, GPT-5.4 Mini, GPT-5.2 and
+GPT-5.3 Codex. Each row cites its official model page. The GPT-6.2 pair and
+GPT-6.1 Terra are cross-checked
+against [OpenAI's API pricing](https://developers.openai.com/api/docs/pricing).
+The other rows in this list also carry a pinned OpenAI catalog cross-check.
+All four GPT-6.2 and GPT-6.1 models listed above price cached input at 0.05×
+the uncached input rate.
+For the GPT-6.2 pair, the table uses the published 30-minute write rate for
+unsplit Codex cache writes. GPT-5.5 and earlier charge no cache-write premium,
+so separately recorded write tokens use 1× input.
 
-GPT-5.5 and GPT-5.4 have Standard long-context prices but no published
-long-context Fast price. Their Fast rows remain `UNPRICED`: the current table
-cannot restrict a speed variant by context length. Other added models have
-2× Fast rates. Ultrafast is not resolved by the adapter and remains an unknown
-tier, even where OpenAI publishes its price. An unknown tier cannot be fixed
-by adding model data; the report keeps its tokens and withholds its cost.
+GPT-5.5 and GPT-5.4 have Fast rates for prompts up to 272,000 input tokens.
+Above that limit, their Fast requests are unpriced.
+
+Ultrafast rates cover GPT-6.2 Astra and Sol, GPT-6 Astra, and GPT-6.1 Sol,
+including long context. The rate snapshot uses the GPT-6.2 promotion of 3×
+Standard through February 28, 2027 Pacific time. Recheck the scheduled 6×
+rate on March 1, 2027 Pacific time and update `rate_table_version`.
+The report applies a single rate snapshot across its whole window.
 
 No published API price was established for `codex-auto-review` or
 `gpt-6.1-astra` on 2026-10-15 UTC. They remain `UNPRICED`; neither is treated
@@ -419,7 +429,8 @@ in a ChatGPT-signed-in session is plan-exempt instead; see [Codex](#codex).
 
 1. Read the current published rates.
 2. Edit `scripts/rates.json`: add or amend entries under `models`, and set
-   `rate_table_version` to the date of the change.
+   `rate_table_version` to the date of the change. Add a revision suffix for
+   a second snapshot on the same date.
 3. If a cache multiplier changed for every model, edit the table's
    `cache_multipliers`; if it changed for one model, give that entry its own
    block.
@@ -440,8 +451,8 @@ not something the report runs: the report never touches the network.
 
 ```
 $ python scripts/refresh_rates.py --commit 7da1fadabbafc4c70078b6f1988c2283422ddb16
-anomalyco/models.dev@7da1fadabbaf (anthropic) vs rates.json (rate_table_version 2026-11-11)
-  absent upstream, left as-is: claude-mythos-5, claude-mythos-5-1, gpt-5.2, gpt-5.3-codex, gpt-5.4, gpt-5.4-mini, gpt-5.5, gpt-5.6, gpt-5.6-luna, gpt-5.6-sol, gpt-5.6-terra, gpt-6-astra, gpt-6-luna, gpt-6-sol, gpt-6.1-sol, gpt-6.1-terra
+anomalyco/models.dev@7da1fadabbaf (anthropic) vs rates.json (rate_table_version 2026-11-18.2)
+  absent upstream, left as-is: claude-mythos-5, claude-mythos-5-1, gpt-5.2, gpt-5.3-codex, gpt-5.4, gpt-5.4-mini, gpt-5.5, gpt-5.6, gpt-5.6-luna, gpt-5.6-sol, gpt-5.6-terra, gpt-6-astra, gpt-6-luna, gpt-6-sol, gpt-6.1-sol, gpt-6.1-terra, gpt-6.2-astra, gpt-6.2-sol
   dated aliases covered by their base id: claude-haiku-4-5-20251001, claude-opus-4-5-20251101, claude-sonnet-4-5-20250929
   every catalog row agrees with the table
 ```
@@ -475,7 +486,7 @@ moved by the script.
 | Runtime | Status |
 | --- | --- |
 | `claude-code` | Supported — reads local session transcripts. |
-| `codex` | Supported — reads local rollouts and their server meter snapshots; reports per-tier rows at published GPT-6/6.1, GPT-5.6 and API-key Codex model list rates; unknown tiers/models remain unpriced. Exits `4` when no rollout source is available. |
+| `codex` | Reads local rollouts and server meter snapshots. Reports per-tier rows at published API rates, including documented promotions. Exits `4` when no rollout source is available. |
 
 An unsupported runtime returns a stated unavailable reason and a distinct exit
 code. It never returns an estimate. A runtime with no readable records is a
@@ -539,9 +550,8 @@ run actually printed; never copy these figures through.
 | <model> | 60 | 7.0M | $X.XX |
 | <model> | 40 | 3.0M | $X.XX |
 
-At list rates, not a bill — a subscription charges a flat fee and prices no
-individual request. Rate table <rate_table_version>, days bucketed in <timezone>,
-read from <n> local transcript files.
+Estimated at published API rates using rate table <rate_table_version>.
+Days bucketed in <timezone>, read from <n> local transcript files.
 ```
 
 Rules for that reply:
@@ -553,9 +563,9 @@ Rules for that reply:
   periods wants magnitude.
 - **Keep cost exact to the cent.** Rounding money hides the thing being asked
   about.
-- **Always state the three qualifiers**: at list rates rather than billed, the
-  rate-table version, and the zone days were bucketed in. A cost with no rate
-  version and no window is not checkable.
+- **State the basis of the estimate.** Give the rate-table version and time zone
+  with the cost estimate at published API rates. Mention any documented promotion
+  that applies to the estimate.
 - **Say what was excluded, if anything.** On exit `3` name the unpriced model
   ids and say the total is partial — never present a partial total as complete.
   Mention web search requests when any were recorded, and the duplicate-record

@@ -1,16 +1,15 @@
-"""Report local agent token usage and what it would cost at API list rates.
+"""Report local agent token usage and what it would cost at published API rates.
 
 A subscription bills a flat fee, so the work done under it has no per-request
-price attached. The tokens are recorded locally anyway, and published list rates
+price attached. The tokens are recorded locally anyway, and published API rates
 are a matter of record, so the two can be combined into a single number: what
 this period's usage would have cost had it been billed per token through the
 API. That number is an equivalence, not a bill — see SKILL.md.
 
 Exit codes:
-    0  report produced, every model priced
+    0  report produced with complete pricing for billable usage
     2  usage, configuration, or rate-table error
-    3  report produced, but at least one model id had no rate (tokens counted,
-       cost omitted for those rows and the total marked incomplete)
+    3  report produced with unpriced billable requests and a partial cost total
     4  the requested runtime has no readable local usage source
 """
 
@@ -102,6 +101,7 @@ class ModelRates:
     long_context_threshold: int | None = None
     long_context_input_multiplier: Decimal = Decimal(1)
     long_context_output_multiplier: Decimal = Decimal(1)
+    max_input_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -251,6 +251,9 @@ class RateTable:
             # produce.
             cls._validate_rates(variant_name, variant_entry)
             cls._validate_multipliers(variant_name, variant_entry)
+            limit = variant_entry.get("max_input_tokens")
+            if limit is not None and (type(limit) is not int or limit <= 0):
+                raise RateTableError(f"{variant_name}.max_input_tokens must be a positive integer")
 
     @classmethod
     def load(cls, path: Path) -> RateTable:
@@ -283,13 +286,15 @@ class RateTable:
             return None
 
         rates = entry
+        max_input_tokens = None
         layers: list[object] = [entry.get("cache_multipliers")]
         if variant:
             speeds = entry.get("speeds")
             variant_rates = speeds.get(variant) if isinstance(speeds, dict) else None
             if not isinstance(variant_rates, dict):
                 return None
-            rates = {**entry, **variant_rates}
+            rates = variant_rates
+            max_input_tokens = variant_rates.get("max_input_tokens")
             layers.append(variant_rates.get("cache_multipliers"))
 
         # Loading validated every listed entry, so a known model's rates are
@@ -320,6 +325,7 @@ class RateTable:
             cache_read=input_rate * multipliers["read"],
             cache_write_5m=input_rate * multipliers["write_5m"],
             cache_write_1h=input_rate * multipliers["write_1h"],
+            max_input_tokens=max_input_tokens,
         )
 
 
@@ -341,11 +347,21 @@ class ModelTotals:
     cache_write_5m_tokens: int = 0
     cache_write_1h_tokens: int = 0
     web_search_requests: int = 0
-    cost: Decimal | None = None
-    priced: bool = True
+    priced_cost: Decimal | None = None
+    priced_requests: int = 0
+    priced_tokens: int = 0
     billable: bool = True
     service_tier: str | None = None
     plan_exempt: bool = False
+
+    @property
+    def priced(self) -> bool:
+        return self.priced_requests == self.requests and self.priced_cost is not None
+
+    @property
+    def cost(self) -> Decimal | None:
+        """Full-row cost for callers that consume the row as one unit."""
+        return self.priced_cost if self.priced else None
 
     @property
     def total_tokens(self) -> int:
@@ -427,22 +443,16 @@ class Report:
         """Tokens the cost figure actually covers.
 
         The token total counts everything observed, including rows that are
-        unpriced or non-billable; the cost total covers only priced rows. When
+        unpriced or non-billable. The cost total covers only priced requests. When
         the two scopes differ the reader is told so explicitly, because a token
         count and a cost sitting on one line imply the cost is the price of
         those tokens.
         """
-        return sum(
-            model.total_tokens
-            for model in self.models
-            if model.billable and model.priced
-        )
+        return sum(model.priced_tokens for model in self.models)
 
     @property
     def priced_requests(self) -> int:
-        return sum(
-            model.requests for model in self.models if model.billable and model.priced
-        )
+        return sum(model.priced_requests for model in self.models)
 
     @property
     def plan_exempt_tokens(self) -> int:
@@ -497,17 +507,15 @@ def build_report(
             pricing_id = record.model if tier in (None, "standard") else f"{record.model}#{tier}"
             model_rates = rates.lookup(pricing_id) if billable and tier != "unknown" else None
             resolved[key] = model_rates
+            display = model_rates.display_name if model_rates is not None else record.model
+            if model_rates is not None and tier not in (None, "standard"):
+                display = display.removesuffix(f" ({tier})")
             entry = ModelTotals(
                 model_id=record.model,
                 service_tier=tier,
-                display_name=(
-                    (model_rates.display_name.removesuffix(" (fast)") if tier == "fast"
-                     else model_rates.display_name) if model_rates is not None else record.model
-                ),
-                priced=model_rates is not None,
+                display_name=display,
                 billable=billable,
                 plan_exempt=record.plan_exempt,
-                cost=Decimal(0) if model_rates is not None else None,
             )
             totals[key] = entry
 
@@ -520,9 +528,16 @@ def build_report(
         entry.web_search_requests += record.web_search_requests
 
         model_rates = resolved[key]
-        if model_rates is not None:
-            assert entry.cost is not None
-            entry.cost += _cost_of(record, model_rates)
+        if model_rates is None:
+            continue
+        prompt_tokens = record.prompt_tokens
+        if model_rates.max_input_tokens is not None and prompt_tokens > model_rates.max_input_tokens:
+            continue
+        entry.priced_requests += 1
+        entry.priced_tokens += prompt_tokens + record.output_tokens
+        if entry.priced_cost is None:
+            entry.priced_cost = Decimal(0)
+        entry.priced_cost += _cost_of(record, model_rates)
 
     for entry in totals.values():
         if entry.plan_exempt:
@@ -533,10 +548,9 @@ def build_report(
             report.complete = False
             if entry.model_id not in report.unpriced_models:
                 report.unpriced_models.append(entry.model_id)
-        else:
-            assert entry.cost is not None
-            entry.cost = entry.cost.quantize(MICRO)
-            report.total_cost += entry.cost
+        if entry.priced_cost is not None:
+            entry.priced_cost = entry.priced_cost.quantize(MICRO)
+            report.total_cost += entry.priced_cost
 
     report.models = sorted(
         totals.values(), key=lambda item: (-item.total_tokens, item.model_id, item.service_tier or "")
@@ -582,9 +596,7 @@ def _attach_server_tools(report: Report, rates: RateTable) -> None:
 
 def _cost_of(record: UsageRecord, rates: ModelRates) -> Decimal:
     input_multiplier = output_multiplier = Decimal(1)
-    prompt_tokens = (record.input_tokens + record.cache_read_tokens
-                     + record.cache_write_5m_tokens + record.cache_write_1h_tokens)
-    if rates.long_context_threshold is not None and prompt_tokens > rates.long_context_threshold:
+    if rates.long_context_threshold is not None and record.prompt_tokens > rates.long_context_threshold:
         input_multiplier = rates.long_context_input_multiplier
         output_multiplier = rates.long_context_output_multiplier
     return (
@@ -672,6 +684,8 @@ def build_summary(
 
 
 def render_table(report: Report) -> str:
+    partial_rows = any(model.priced_cost is not None and not model.priced for model in report.models)
+    rate_label = "published rates" if report.runtime == CODEX else "list rates"
     window = "all recorded usage"
     if report.window_by_instant:
         # A sub-day window is asked precisely, so it is answered precisely:
@@ -686,7 +700,7 @@ def render_table(report: Report) -> str:
     lines = [
         f"Runtime: {report.runtime}    Window: {window}",
         (
-            f"Rate table: {report.rate_table_version} ({report.currency}, list rates)"
+            f"Rate table: {report.rate_table_version} ({report.currency}, {rate_label})"
             f"    Days: {report.timezone}"
         ),
         "",
@@ -720,8 +734,8 @@ def render_table(report: Report) -> str:
             )
         if any(not row.complete for row in report.summary):
             lines.append("")
-            lines.append("* partial: this period contains an unpriced model or tier."
-                         if report.runtime == CODEX else
+            lines.append("* partial: this period contains unpriced requests."
+                         if report.runtime == CODEX or partial_rows else
                          "* partial: this period contains a model with no published rate.")
         lines.append("")
         lines.append("By model, over the full window:")
@@ -736,9 +750,10 @@ def render_table(report: Report) -> str:
             cost = "plan-exempt"
         elif not model.billable:
             cost = "not billable"
-        elif model.priced:
-            assert model.cost is not None
-            cost = _money(model.cost)
+        elif model.priced_cost is not None:
+            cost = _money(model.priced_cost)
+            if not model.priced:
+                cost += " partial"
         else:
             cost = "UNPRICED"
         lines.append(
@@ -774,17 +789,20 @@ def render_table(report: Report) -> str:
     lines.append("")
 
     if report.priced_tokens != report.total_tokens:
-        markers = (
-            "UNPRICED, not billable or plan-exempt" if report.plan_exempt_tokens
-            else "UNPRICED or not billable"
-        )
-        lines.append(
+        coverage = (
             f"Cost covers {_thousands(report.priced_tokens)} of the "
-            f"{_thousands(report.total_tokens)} token(s) shown. The rest belong to "
-            f"rows marked {markers}, which are counted in the token total but carry "
-            "no cost."
+            f"{_thousands(report.total_tokens)} token(s) shown."
         )
-        lines.append("")
+        if not partial_rows:
+            markers = (
+                "UNPRICED, not billable or plan-exempt" if report.plan_exempt_tokens
+                else "UNPRICED or not billable"
+            )
+            coverage += (
+                f" The rest belong to rows marked {markers}, which are counted "
+                "in the token total but carry no cost."
+            )
+        lines.extend([coverage, ""])
     if report.plan_exempt_tokens:
         lines.append(
             f"Plan-exempt: {_thousands(report.plan_exempt_tokens)} token(s) in "
@@ -793,7 +811,7 @@ def render_table(report: Report) -> str:
             "since 2026-10-06. Subtract them from the token total for plan usage."
         )
         lines.append("")
-    if report.unpriced_models and report.runtime != CODEX:
+    if report.unpriced_models and report.runtime != CODEX and not partial_rows:
         lines.append(
             "INCOMPLETE: no rate is published in the rate table for "
             f"{', '.join(sorted(report.unpriced_models))}. Their tokens appear in the "
@@ -801,9 +819,12 @@ def render_table(report: Report) -> str:
             "to rates.json to price them."
         )
         lines.append("")
-    if report.unpriced_models and report.runtime == CODEX:
-        lines.extend(["INCOMPLETE: rows with an unknown tier or no matching model/tier rate are "
-                      "UNPRICED; their tokens are counted but excluded from cost.", ""])
+    elif report.unpriced_models:
+        lines.extend([
+            "INCOMPLETE: Some requests lack a rate for their model, tier or prompt size. "
+            "Partial rows show the subtotal for priced requests.",
+            "",
+        ])
     if report.non_billable_models:
         lines.append(
             "Excluded as non-billable: "
@@ -969,6 +990,14 @@ def render_json(report: Report) -> str:
                 },
                 "web_search_requests": model.web_search_requests,
                 "cost": None if model.cost is None else str(model.cost),
+                **(
+                    {
+                        "priced_cost": str(model.priced_cost),
+                        "priced_requests": model.priced_requests,
+                        "priced_tokens": model.priced_tokens,
+                    }
+                    if model.priced_cost is not None and not model.priced else {}
+                ),
             }
             for model in report.models
         ],
@@ -1142,7 +1171,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="usage_cost.py",
         description=(
             "Report locally recorded agent token usage and what that usage would "
-            "cost at published API list rates."
+            "cost at published API rates."
         ),
     )
     parser.add_argument(

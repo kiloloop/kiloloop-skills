@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "rate_table_version": "2026-11-11",
+  "rate_table_version": "2026-11-18.2",
   "currency": "USD",
   "unit": "per_million_tokens",
   "source": "https://platform.claude.com/docs/en/about-claude/pricing",
@@ -11,7 +11,7 @@
     "commit": "7da1fadabbafc4c70078b6f1988c2283422ddb16",
     "checked": "2026-11-11"
   },
-  "effective_date_policy": "Rates are the standard list prices published at the source on source_checked, with no scheduled future change applied ahead of its effective date. A run reports rate_table_version so a figure can be tied to the prices it used; it does not reprice historical usage at the rates in force on the day that usage occurred.",
+  "effective_date_policy": "Each snapshot uses the published prices in effect when checked, including applicable promotions. A run uses its rate_table_version for the entire report window.",
   "note": "Rates are decimal strings so that loading them introduces no binary floating-point error. Cache rates are derived from the input rate using the multipliers below rather than stored per model, because the published pricing defines them that way. A model whose published cache pricing departs from the table's multipliers carries its own cache_multipliers block, which overrides only the tiers it names.",
   "server_tools": {
     "web_search": {
@@ -171,6 +171,10 @@
         "fast": {
           "input": "20.00",
           "output": "100.00"
+        },
+        "ultrafast": {
+          "input": "60.00",
+          "output": "300.00"
         }
       },
       "long_context": {
@@ -179,8 +183,8 @@
         "output_multiplier": "1.5"
       },
       "source": "https://developers.openai.com/api/docs/models/gpt-6-astra",
-      "source_checked": "2026-09-21",
-      "note": "SOURCE: model page read 2026-09-21 UTC. Per million tokens: input $10, cached input $1, cache writes $12.50, output $50. Fast is 2x applicable API rates (not the Codex credit multiplier). Above 272K prompt tokens, input/cache rates double and output is 1.5x. Codex unsplit writes occupy the write_5m slot without a lifetime claim."
+      "source_checked": "2026-11-18",
+      "note": "Fast is 2x and Ultrafast is 6x Standard API rates, cross-checked against https://developers.openai.com/api/docs/pricing. Above 272K prompt tokens, input/cache rates double and output is 1.5x. Unsplit Codex cache writes use the 30-minute rate."
     },
     "gpt-6-sol": {
       "display_name": "GPT-6 Sol",
@@ -230,6 +234,62 @@
       "source_checked": "2026-09-23",
       "note": "SOURCE: model page read 2026-09-23 UTC. Per million tokens: input $0.10, cached input $0.01, cache writes $0.125, output $0.50. Fast is 2x applicable API rates (not the Codex credit multiplier). Above 272K prompt tokens, input/cache rates double and output is 1.5x. Codex unsplit writes occupy the write_5m slot without a lifetime claim."
     },
+    "gpt-6.2-astra": {
+      "display_name": "GPT-6.2 Astra",
+      "input": "8.00",
+      "output": "40.00",
+      "cache_multipliers": {
+        "read": "0.05",
+        "write_5m": "1.25",
+        "write_1h": "1.25"
+      },
+      "speeds": {
+        "fast": {
+          "input": "16.00",
+          "output": "80.00"
+        },
+        "ultrafast": {
+          "input": "24.00",
+          "output": "120.00"
+        }
+      },
+      "long_context": {
+        "input_tokens_above": 272000,
+        "input_multiplier": "2",
+        "output_multiplier": "1.5"
+      },
+      "source": "https://developers.openai.com/api/docs/models/gpt-6.2-astra",
+      "source_checked": "2026-11-18",
+      "note": "Cross-checked against https://developers.openai.com/api/docs/pricing. Unsplit Codex cache writes use the 30-minute rate. Ultrafast is 3x Standard through 2027-02-28 Pacific time. Recheck for the scheduled 6x price on 2027-03-01 Pacific time and bump rate_table_version."
+    },
+    "gpt-6.2-sol": {
+      "display_name": "GPT-6.2 Sol",
+      "input": "2.00",
+      "output": "10.00",
+      "cache_multipliers": {
+        "read": "0.05",
+        "write_5m": "1.25",
+        "write_1h": "1.25"
+      },
+      "speeds": {
+        "fast": {
+          "input": "4.00",
+          "output": "20.00"
+        },
+        "ultrafast": {
+          "input": "6.00",
+          "output": "30.00"
+        }
+      },
+      "long_context": {
+        "input_tokens_above": 272000,
+        "input_multiplier": "2",
+        "output_multiplier": "1.5"
+      },
+      "source": "https://developers.openai.com/api/docs/models/gpt-6.2-sol",
+      "source_checked": "2026-11-18",
+      "note": "Cross-checked against https://developers.openai.com/api/docs/pricing. Unsplit Codex cache writes use the 30-minute rate. Ultrafast is 3x Standard through 2027-02-28 Pacific time. Recheck for the scheduled 6x price on 2027-03-01 Pacific time and bump rate_table_version."
+    },
     "gpt-6.1-sol": {
       "display_name": "GPT-6.1 Sol",
       "input": "2.00",
@@ -243,6 +303,10 @@
         "fast": {
           "input": "4.00",
           "output": "20.00"
+        },
+        "ultrafast": {
+          "input": "12.00",
+          "output": "60.00"
         }
       },
       "long_context": {
@@ -251,14 +315,14 @@
         "output_multiplier": "1.5"
       },
       "source": "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
-      "source_checked": "2026-10-15",
+      "source_checked": "2026-11-18",
       "catalog_cross_check": {
         "source": "https://github.com/anomalyco/models.dev",
         "provider": "openai",
         "commit": "da0d4b331a9c150b196aa5dde81aad5f07272e4b",
         "checked": "2026-10-15"
       },
-      "note": "Standard list rates; Fast is 2x. Above 272K prompt tokens, input/cache rates double and output is 1.5x. Unsplit Codex cache writes use write_5m without a lifetime claim. Tier prices cross-checked against https://developers.openai.com/api/docs/pricing. Ultrafast is not resolved by the Codex adapter and remains an unknown tier."
+      "note": "Fast is 2x and Ultrafast is 6x Standard API rates, cross-checked against https://developers.openai.com/api/docs/pricing. Above 272K prompt tokens, input/cache rates double and output is 1.5x. Unsplit Codex cache writes use the 30-minute rate."
     },
     "gpt-6.1-terra": {
       "display_name": "GPT-6.1 Terra",
@@ -413,15 +477,22 @@
         "write_5m": "1",
         "write_1h": "1"
       },
+      "speeds": {
+        "fast": {
+          "input": "12.50",
+          "output": "75.00",
+          "max_input_tokens": 272000
+        }
+      },
       "source": "https://developers.openai.com/api/docs/models/gpt-5.5",
-      "source_checked": "2026-10-15",
+      "source_checked": "2026-11-18",
       "catalog_cross_check": {
         "source": "https://github.com/anomalyco/models.dev",
         "provider": "openai",
         "commit": "da0d4b331a9c150b196aa5dde81aad5f07272e4b",
         "checked": "2026-10-15"
       },
-      "note": "API-key Codex model; Standard list rates. GPT-5.5 and earlier incur no additional cache-write charge (https://developers.openai.com/api/docs/guides/prompt-caching), so separately recorded write tokens cost ordinary input rates, with no lifetime distinction. Above 272K input tokens, Standard input/cache rates double and output is 1.5x. Fast is deliberately omitted: no >272K Fast price is published, and this table cannot express a speed-specific context limit.",
+      "note": "API-key Codex model. Fast is 2.5x Standard for short context per https://developers.openai.com/api/docs/pricing. Above 272K input tokens, Standard input/cache rates double and output is 1.5x. Cache writes cost the input rate.",
       "long_context": {
         "input_tokens_above": 272000,
         "input_multiplier": "2",
@@ -437,15 +508,22 @@
         "write_5m": "1",
         "write_1h": "1"
       },
+      "speeds": {
+        "fast": {
+          "input": "5.00",
+          "output": "30.00",
+          "max_input_tokens": 272000
+        }
+      },
       "source": "https://developers.openai.com/api/docs/models/gpt-5.4",
-      "source_checked": "2026-10-15",
+      "source_checked": "2026-11-18",
       "catalog_cross_check": {
         "source": "https://github.com/anomalyco/models.dev",
         "provider": "openai",
         "commit": "da0d4b331a9c150b196aa5dde81aad5f07272e4b",
         "checked": "2026-10-15"
       },
-      "note": "API-key Codex model; Standard list rates. GPT-5.5 and earlier incur no additional cache-write charge (https://developers.openai.com/api/docs/guides/prompt-caching), so separately recorded write tokens cost ordinary input rates, with no lifetime distinction. Above 272K input tokens, Standard input/cache rates double and output is 1.5x. Fast is deliberately omitted: no >272K Fast price is published, and this table cannot express a speed-specific context limit.",
+      "note": "API-key Codex model. Fast is 2x Standard for short context per https://developers.openai.com/api/docs/pricing. Above 272K input tokens, Standard input/cache rates double and output is 1.5x. Cache writes cost the input rate.",
       "long_context": {
         "input_tokens_above": 272000,
         "input_multiplier": "2",

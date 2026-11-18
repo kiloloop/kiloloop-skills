@@ -8,6 +8,18 @@ A release is a snapshot of the whole collection. Skills are distributed
 together but installed independently, so the exact tool versions each release
 pins are also recorded in [Pinned tool versions](#pinned-tool-versions).
 
+## [0.4.8] - 2026-11-18
+
+### Added
+
+- Price GPT-6.2 Astra and Sol usage at Standard, Fast, and promotional Ultrafast API rates in [usage-cost](skills/usage-cost/SKILL.md#rate-table).
+- Price Codex Ultrafast requests for GPT-6 Astra and GPT-6.1 Sol in [usage-cost](skills/usage-cost/SKILL.md#rate-table).
+- Price GPT-5.4 and GPT-5.5 Fast requests within their short-context limit in [usage-cost](skills/usage-cost/SKILL.md#rate-table).
+
+### Changed
+
+- Show the priced subtotal and coverage for partially priced model and tier rows in [usage-cost](skills/usage-cost/SKILL.md#rate-table).
+
 ## [0.4.7] - 2026-11-11
 
 ### Added
@@ -196,6 +208,7 @@ reading every entry above.
 
 | Release | Skill | Pinned distribution |
 | --- | --- | --- |
+| 0.4.8 | `memory-lint` | `memory-lint==0.1.0` |
 | 0.4.7 | `memory-lint` | `memory-lint==0.1.0` |
 | 0.4.6 | `memory-lint` | `memory-lint==0.1.0` |
 | 0.4.5 | `memory-lint` | `memory-lint==0.1.0` |
@@ -208,6 +221,7 @@ reading every entry above.
 | 0.2.0 | `memory-lint` | `memory-lint==0.1.0` |
 | 0.1.0 | `memory-lint` | `memory-lint==0.1.0` |
 
+[0.4.8]: https://github.com/kiloloop/kiloloop-skills/compare/v0.4.7...v0.4.8
 [0.4.7]: https://github.com/kiloloop/kiloloop-skills/compare/v0.4.6...v0.4.7
 [0.4.6]: https://github.com/kiloloop/kiloloop-skills/compare/v0.4.5...v0.4.6
 [0.4.5]: https://github.com/kiloloop/kiloloop-skills/compare/v0.4.4...v0.4.5

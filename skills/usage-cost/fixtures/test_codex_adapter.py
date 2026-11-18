@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from decimal import Decimal
 from pathlib import Path
 import subprocess
 import sys
@@ -429,15 +430,16 @@ def test_legacy_id_requires_weekly_and_ignores_newer_short_limit(tmp_path, absen
     assert _json(tmp_path)["rate_limits"]["primary"]["used_percent"] == 42
 
 
-def test_mid_session_tier_changes_keep_unknown_separate_and_price_fast(tmp_path):
+def test_mid_session_tier_changes_keep_each_speed_and_unknown_separate(tmp_path):
     _write(tmp_path, [_context(), _token(100), _settings("priority"),
                       _token(1100, 100, 100, 100), _settings("default"),
                       _token(1100, 100, 100, 100),  # duplicate, no Standard request
                       _context(), _token(2100, 200, 200, 200),
-                      _settings(None), _token(2200, 200, 200, 200)])
+                      _settings("ultrafast"), _token(3100, 300, 300, 300),
+                      _settings(None), _token(3200, 300, 300, 300)])
     payload = _json(tmp_path, exit_code=3)
     rows = {r["service_tier"]: r for r in payload["models"]}
-    assert set(rows) == {"fast", "standard", "unknown"}
+    assert set(rows) == {"fast", "standard", "ultrafast", "unknown"}
     assert {r["model_id"] for r in rows.values()} == {"gpt-6-astra"}
     assert rows["unknown"]["tokens"]["total"] == 200
     assert rows["unknown"]["requests"] == 2
@@ -445,10 +447,12 @@ def test_mid_session_tier_changes_keep_unknown_separate_and_price_fast(tmp_path)
     # 800 uncached*10 + 100 read*1 + 100 write*12.5 + 100 output*50 = 14350/M.
     assert rows["standard"]["cost"] == "0.014350"
     assert rows["fast"]["cost"] == "0.028700"
+    assert rows["ultrafast"]["cost"] == "0.086100"
     assert rows["fast"]["tokens"]["total"] == rows["standard"]["tokens"]["total"] == 1100
     assert rows["standard"]["requests"] == rows["fast"]["requests"] == 1
     table = run(tmp_path).stdout
-    assert all(label in table for label in ("Tier", "Fast", "Standard", "Unknown"))
+    assert "(USD, published rates)" in table
+    assert all(label in table for label in ("Tier", "Fast", "Standard", "Ultrafast", "Unknown"))
 
 
 @pytest.mark.parametrize("tier", ["priority", "fast"])
@@ -559,34 +563,44 @@ def test_cwd_exclusions_count_only_in_window_increments(tmp_path):
 
 # Realistic rollout shapes; all counters, filenames and event identities are synthetic.
 # Costs are independently derived from published per-million prices, not rates.json.
-_NEW_CODEX_RATES = [
-    ("gpt-6.1-terra", "0.014300", "1", "0.05", "1.25", "5", True, True),
-    ("gpt-6.1-sol", "0.028600", "2", "0.10", "2.50", "10", True, True),
-    ("gpt-5.6-sol", "0.057400", "4", "0.40", "5", "20", True, True),
-    ("gpt-5.6", "0.057400", "4", "0.40", "5", "20", True, True),
-    ("gpt-5.6-terra", "0.030700", "2", "0.20", "2.50", "12", True, True),
-    ("gpt-5.6-luna", "0.003070", "0.20", "0.02", "0.25", "1.20", True, True),
-    ("gpt-5.5", "0.075500", "5", "0.50", "5", "30", False, True),
-    ("gpt-5.4", "0.037750", "2.50", "0.25", "2.50", "15", False, True),
-    ("gpt-5.4-mini", "0.011325", "0.75", "0.075", "0.75", "4.50", True, False),
-    ("gpt-5.2", "0.029925", "1.75", "0.175", "1.75", "14", True, False),
-    ("gpt-5.3-codex", "0.029925", "1.75", "0.175", "1.75", "14", True, False),
+_CODEX_RATES = [
+    ("gpt-6-astra", "0.143500", "10", "1", "12.50", "50", True),
+    ("gpt-6.2-astra", "0.114400", "8", "0.40", "10", "40", True),
+    ("gpt-6.2-sol", "0.028600", "2", "0.10", "2.50", "10", True),
+    ("gpt-6.1-terra", "0.014300", "1", "0.05", "1.25", "5", True),
+    ("gpt-6.1-sol", "0.028600", "2", "0.10", "2.50", "10", True),
+    ("gpt-5.6-sol", "0.057400", "4", "0.40", "5", "20", True),
+    ("gpt-5.6", "0.057400", "4", "0.40", "5", "20", True),
+    ("gpt-5.6-terra", "0.030700", "2", "0.20", "2.50", "12", True),
+    ("gpt-5.6-luna", "0.003070", "0.20", "0.02", "0.25", "1.20", True),
+    ("gpt-5.5", "0.075500", "5", "0.50", "5", "30", True),
+    ("gpt-5.4", "0.037750", "2.50", "0.25", "2.50", "15", True),
+    ("gpt-5.4-mini", "0.011325", "0.75", "0.075", "0.75", "4.50", False),
+    ("gpt-5.2", "0.029925", "1.75", "0.175", "1.75", "14", False),
+    ("gpt-5.3-codex", "0.029925", "1.75", "0.175", "1.75", "14", False),
 ]
+_ULTRAFAST_MULTIPLIERS = {"gpt-6-astra": 6, "gpt-6.1-sol": 6, "gpt-6.2-astra": 3, "gpt-6.2-sol": 3}
+_FAST_MULTIPLIERS = {"gpt-5.5": Decimal("2.5")}
+_SHORT_CONTEXT_FAST = {"gpt-5.4", "gpt-5.5"}
 
 
-@pytest.mark.parametrize("model,expected,inp,read,write,out,fast,long", _NEW_CODEX_RATES)
-def test_added_codex_models_price_disjoint_cache_classes(tmp_path, model, expected, inp, read, write, out, fast, long):
-    from decimal import Decimal
+@pytest.mark.parametrize("model,expected,inp,read,write,out,long", _CODEX_RATES)
+def test_added_codex_models_price_disjoint_cache_classes(tmp_path, model, expected, inp, read, write, out, long):
     context = {"type": "turn_context", "payload": {"model": model}}
     # 8000 uncached + 1000 read + 1000 write + 1000 output = 11000 tokens.
-    for tier in ("default", "priority", "ultrafast", None):
-        _write(tmp_path, [context, _settings(tier), _token(10000, 1000, 1000, 1000)])
-        priced = tier == "default" or (tier == "priority" and fast)
-        result = _json(tmp_path, exit_code=0 if priced else 3)
+    for setting, tier, multiplier in (
+        ("default", "standard", 1),
+        ("priority", "fast", _FAST_MULTIPLIERS.get(model, 2)),
+        ("ultrafast", "ultrafast", _ULTRAFAST_MULTIPLIERS.get(model)),
+        (None, "unknown", None),
+    ):
+        _write(tmp_path, [context, _settings(setting), _token(10000, 1000, 1000, 1000)])
+        result = _json(tmp_path, exit_code=0 if multiplier is not None else 3)
         assert result["totals"]["tokens"] == 11000
-        if priced:
-            expected_cost = Decimal(expected) * (2 if tier == "priority" else 1)
-            assert Decimal(result["totals"]["cost"]) == expected_cost
+        assert result["models"][0]["service_tier"] == tier
+        if multiplier is not None:
+            assert Decimal(result["totals"]["cost"]) == Decimal(expected) * multiplier
+            assert result["totals"]["priced_tokens"] == 11000
             assert result["unpriced_models"] == []
         else:
             assert result["models"][0]["cost"] is None
@@ -594,24 +608,59 @@ def test_added_codex_models_price_disjoint_cache_classes(tmp_path, model, expect
             assert result["unpriced_models"] == [model]
 
 
-@pytest.mark.parametrize("model,expected,inp,read,write,out,fast,long", _NEW_CODEX_RATES)
+@pytest.mark.parametrize("model,expected,inp,read,write,out,long", _CODEX_RATES)
 @pytest.mark.parametrize("prompt", [272000, 272001])
-def test_added_codex_context_boundary_prices_full_increment(tmp_path, model, expected, inp, read, write, out, fast, long, prompt):
-    from decimal import Decimal as D
+def test_added_codex_context_boundary_prices_full_increment(tmp_path, model, expected, inp, read, write, out, long, prompt):
     context = {"type": "turn_context", "payload": {"model": model}}
     # Input consists of prompt-200000 uncached, 100000 reads and 100000 writes.
-    input_cost = D(prompt - 200000) * D(inp) + 100000 * (D(read) + D(write))
-    output_cost = 2000 * D(out)
+    input_cost = Decimal(prompt - 200000) * Decimal(inp) + 100000 * (Decimal(read) + Decimal(write))
+    output_cost = 2000 * Decimal(out)
     if long and prompt > 272000:
         input_cost *= 2
-        output_cost *= D("1.5")
-    for tier in ("default", "priority"):
-        _write(tmp_path, [context, _settings(tier), _token(prompt, 2000, 100000, 100000)])
-        if tier == "priority" and not fast:
+        output_cost *= Decimal("1.5")
+    speeds = {"default": 1, "priority": _FAST_MULTIPLIERS.get(model, 2)}
+    if model in _ULTRAFAST_MULTIPLIERS:
+        speeds["ultrafast"] = _ULTRAFAST_MULTIPLIERS[model]
+    for setting, multiplier in speeds.items():
+        _write(tmp_path, [context, _settings(setting), _token(prompt, 2000, 100000, 100000)])
+        if setting == "priority" and model in _SHORT_CONTEXT_FAST and prompt > 272000:
             assert _json(tmp_path, exit_code=3)["models"][0]["cost"] is None
         else:
-            cost = (input_cost + output_cost) / 1000000 * (2 if tier == "priority" else 1)
+            cost = (input_cost + output_cost) / 1000000 * multiplier
             assert _json(tmp_path)["totals"]["cost"] == f"{cost:.6f}"
+
+
+@pytest.mark.parametrize("first_prompt", [272000, 272001])
+def test_context_limited_fast_row_reports_priced_subtotal_in_both_orders(tmp_path, first_prompt):
+    context = {"type": "turn_context", "payload": {"model": "gpt-5.4"}}
+    _write(tmp_path, [context, _settings("priority"), _token(first_prompt, 2000, 100000, 100000),
+                      _token(544001, 4000, 200000, 200000)])
+    report = _json(tmp_path, exit_code=3)
+    assert not report["complete"]
+    assert report["unpriced_models"] == ["gpt-5.4"]
+    row, = report["models"]
+    assert row["service_tier"] == "fast"
+    assert row["requests"] == 2 and row["tokens"]["total"] == 548001
+    assert not row["priced"] and row["cost"] is None
+    # 72K uncached at 5 + 100K read at 0.50 + 100K write at 5 + 2K output at 30.
+    assert row["priced_cost"] == report["totals"]["cost"] == "0.970000"
+    assert row["priced_requests"] == report["totals"]["priced_requests"] == 1
+    assert row["priced_tokens"] == report["totals"]["priced_tokens"] == 274000
+    output = run(tmp_path)
+    assert output.returncode == 3
+    assert "0.97 partial" in output.stdout
+    assert "Cost covers 274,000 of the 548,001 token(s) shown." in output.stdout
+
+
+@pytest.mark.parametrize("limit", [True, 0, -1, 272000.0, "272000"])
+def test_non_integer_or_nonpositive_speed_context_limit_is_rejected(tmp_path, limit):
+    rates = json.loads((SCRIPTS / "rates.json").read_text())
+    rates["models"]["gpt-5.4"]["speeds"]["fast"]["max_input_tokens"] = limit
+    rates_file = tmp_path / "rates.json"
+    rates_file.write_text(json.dumps(rates))
+    result = run(tmp_path, "--rates", str(rates_file))
+    assert result.returncode == 2
+    assert "models.gpt-5.4.speeds.fast.max_input_tokens must be a positive integer" in result.stderr
 
 
 @pytest.mark.parametrize("model", ["codex-auto-review", "gpt-6.1-astra", "gpt-6.1-sol-near-miss", "gpt-6.1-terra-near-miss"])
